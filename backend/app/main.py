@@ -1,0 +1,46 @@
+"""FastAPI application factory."""
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.config import settings
+from app.database import init_db
+from app.api import health
+from app.api.v1 import materials
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="AI-Driven Material Management System for Shipbuilding",
+    openapi_url="/api/openapi.json",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
+
+# CORS configuration for frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize database on startup
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
+# Include routers
+app.include_router(health.router)
+app.include_router(materials.router)
+
+
+@app.get("/")
+def root():
+    """Root endpoint."""
+    return {
+        "message": f"Welcome to {settings.app_name}",
+        "version": settings.app_version,
+        "docs": "/api/docs",
+    }

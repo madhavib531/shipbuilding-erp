@@ -1,0 +1,10 @@
+{
+  "description": "Manage shipbuilding materials efficiently with a comprehensive ERP dashboard, featuring inventory tracking, procurement, AI analytics, and quality control.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
