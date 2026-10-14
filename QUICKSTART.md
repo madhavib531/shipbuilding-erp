@@ -4,7 +4,7 @@
 
 ```powershell
 # Terminal 1: Frontend
-cd "C:\ACD_cpb\Shipbuilding ERP Dashboard Design"
+cd C:\ACD_cpb\frontend
 pnpm install
 pnpm run dev
 # Available at http://localhost:8443
@@ -63,7 +63,7 @@ Get-Process python | Stop-Process -Force
 pytest tests/ -v
 
 # Format code
-cd Shipbuilding\ ERP\ Dashboard\ Design
+cd frontend
 pnpm format
 
 # Check dependencies

@@ -443,7 +443,7 @@ tests/test_models.py::test_supplier_creation PASSED                  [100%]
 
 ```
 C:\ACD_cpb\
-├── Shipbuilding ERP Dashboard Design/    [Frontend — React 19, Vite, Tailwind]
+├── frontend/                             [Frontend — React 19, Vite, Tailwind]
 │   ├── src/
 │   ├── package.json
 │   └── (unchanged)

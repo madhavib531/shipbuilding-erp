@@ -243,7 +243,7 @@ FRONTEND COMPATIBILITY
 Frontend Status: ✅ Preserved - No Changes
 
 React 19 Frontend:
-  ✅ Location: C:\ACD_cpb\Shipbuilding ERP Dashboard Design\
+  ✅ Location: C:\ACD_cpb\frontend\
   ✅ All files unchanged
   ✅ package.json unchanged
   ✅ src/App.tsx unchanged
