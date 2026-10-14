@@ -5,13 +5,15 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 from app.config import settings
 
-# SQLite engine with check_same_thread=False for async contexts
-engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-    echo=settings.debug,
-)
+_engine_kwargs: dict = {"echo": settings.debug}
+
+if settings.database_url.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+    _engine_kwargs["poolclass"] = StaticPool
+else:
+    _engine_kwargs["pool_pre_ping"] = True
+
+engine = create_engine(settings.database_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -23,9 +25,3 @@ def get_db() -> Session:
         yield db
     finally:
         db.close()
-
-
-def init_db():
-    """Create all database tables."""
-    from app.models.base import Base
-    Base.metadata.create_all(bind=engine)

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   alerts,
   audits,
@@ -21,6 +21,10 @@ import {
   StatePanel,
   type IconName,
 } from "./components/ui";
+import { getReferenceData, listMaterials, type ApiMaterial, type ReferenceData } from "./api/materials";
+import { MaterialDialog } from "./components/MaterialDialog";
+
+const INVENTORY_PAGE_SIZE = 25;
 
 const navIcons: Record<PageName, IconName> = {
   Dashboard: "dashboard",
@@ -130,23 +134,70 @@ function Dashboard({ onNavigate }: { onNavigate: (page: PageName) => void }) {
 
 function Inventory() {
   const [query, setQuery] = useState("");
-  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("ready");
-  const [dialog, setDialog] = useState(false);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("");
+  const [yard, setYard] = useState("");
+  const [skip, setSkip] = useState(0);
+  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [dialog, setDialog] = useState<{ material?: ApiMaterial } | null>(null);
   const [toast, setToast] = useState("");
-  const filtered = useMemo(() => materials.filter((item) => `${item.id} ${item.name} ${item.category} ${item.ship}`.toLowerCase().includes(query.toLowerCase())), [query]);
-  const act = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2800); };
+  const toastTimer = useRef<number | undefined>(undefined);
+  const [items, setItems] = useState<ApiMaterial[]>([]);
+  const [total, setTotal] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [refs, setRefs] = useState<ReferenceData | null>(null);
+  const [refsError, setRefsError] = useState("");
+
+  useEffect(() => {
+    const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getReferenceData(controller.signal)
+      .then(setRefs)
+      .catch((err) => { if (!controller.signal.aborted) setRefsError(`Categories, yards and ships could not be loaded: ${err.message}`); });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState("loading");
+    listMaterials({ skip, limit: INVENTORY_PAGE_SIZE, search, category, yard }, controller.signal)
+      .then(({ materials: loaded, total: count }) => {
+        setItems(loaded);
+        setTotal(count);
+        setState(loaded.length === 0 ? "empty" : "ready");
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setState("error");
+      });
+    return () => controller.abort();
+  }, [skip, search, category, yard, reloadKey]);
+
+  const act = (message: string) => {
+    window.clearTimeout(toastTimer.current);
+    setToast(message);
+    toastTimer.current = window.setTimeout(() => setToast(""), 2800);
+  };
+  const afterSave = (message: string) => { setDialog(null); act(message); setReloadKey((k) => k + 1); };
+  const firstShown = total === 0 ? 0 : skip + 1;
   return <>
-    <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" onClick={() => act("Export prepared locally (demo)")}>Export</Button><Button icon="plus" onClick={() => setDialog(true)}>Receive material</Button></>}/>
+    <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" disabled title="Export is not available yet">Export</Button><Button icon="plus" onClick={() => setDialog({})}>Add material</Button></>}/>
     <Card className="table-card">
       <div className="table-toolbar">
-        <Input icon="search" placeholder="Search by material, ID, batch or ship…" value={query} onChange={(e) => setQuery(e.target.value)}/>
-        <div className="toolbar-filters"><Select defaultValue="All categories"><option>All categories</option><option>Structural steel</option><option>Electrical</option><option>Piping</option></Select><Select defaultValue="All yards"><option>All yards</option><option>Harbor North</option><option>East Basin</option></Select><Button variant="secondary" icon="filter">Filters</Button></div>
+        <Input icon="search" placeholder="Search by material ID, name or batch…" value={query} onChange={(e) => setQuery(e.target.value)}/>
+        <div className="toolbar-filters"><Select aria-label="Filter by category" value={category} onChange={(e) => { setCategory(e.target.value); setSkip(0); }}><option value="">All categories</option>{refs?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select><Select aria-label="Filter by yard" value={yard} onChange={(e) => { setYard(e.target.value); setSkip(0); }}><option value="">All yards</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select><Button variant="secondary" icon="filter" disabled title="Additional filters are not available yet">Filters</Button></div>
       </div>
-      <div className="state-switcher" aria-label="Preview table states"><span>View state:</span>{(["ready","loading","empty","error"] as const).map(s => <button className={state === s ? "active" : ""} onClick={() => setState(s)} key={s}>{s}</button>)}</div>
-      {state !== "ready" ? <StatePanel type={state} onRetry={() => setState("ready")}/> : filtered.length === 0 ? <StatePanel type="empty"/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{filtered.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved</small></td><td><strong>{item.ship}</strong><small>{Math.round(item.reserved / item.quantity * 100)}% allocated</small></td><td><strong>{item.yard}</strong><small>Zone {item.id.slice(-2)}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" onClick={() => act(`Actions opened for ${item.id}`)}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
-      <div className="table-footer"><span>Showing {filtered.length} of 12,480 materials</span><div><Button variant="ghost" disabled>Previous</Button><Button variant="secondary">Next</Button></div></div>
+      {state === "error" && <div className="notice" role="alert"><Icon name="warning"/>{loadError}</div>}
+      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`Edit ${item.id}`} title="Edit or delete" onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
+      <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} materials` : `${total} materials`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - INVENTORY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + INVENTORY_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
-    {dialog && <div className="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="receive-title"><button className="dialog-scrim" onClick={() => setDialog(false)} aria-label="Close dialog"/><div className="dialog"><div className="dialog-header"><div><p className="eyebrow">Inbound inventory</p><h2 id="receive-title">Receive material</h2><p>Record a physical delivery against a purchase order.</p></div><button className="icon-button" onClick={() => setDialog(false)}><Icon name="close"/></button></div><div className="form-grid"><label><span>Purchase order</span><Select><option>PO-89142 · Nordic Marine Steel</option><option>PO-89118 · BlueLine Components</option></Select></label><label><span>Delivery note</span><Input placeholder="e.g. DN-30411"/></label><label><span>Material ID</span><Input placeholder="Scan or enter ID"/></label><label><span>Received quantity</span><Input type="number" placeholder="0"/></label><label><span>Receiving yard</span><Select><option>Harbor North</option><option>East Basin</option><option>Dry Dock 4</option></Select></label><label><span>Quality status</span><Select><option>Pending inspection</option><option>Accepted</option><option>Quarantine</option></Select></label></div><div className="notice"><Icon name="warning"/>This demo records no backend data. Connect the form to your FastAPI receiving endpoint.</div><div className="dialog-actions"><Button variant="ghost" onClick={() => setDialog(false)}>Cancel</Button><Button onClick={() => { setDialog(false); act("Receipt saved as a local demo draft"); }}>Save receipt</Button></div></div></div>}
+    {dialog && <MaterialDialog material={dialog.material} refs={refs} refsError={refsError} onClose={() => setDialog(null)} onDone={afterSave}/>}
     {toast && <div className="toast"><Icon name="check"/>{toast}</div>}
   </>;
 }

@@ -1,5 +1,8 @@
 """Pytest configuration and fixtures."""
 
+import os
+import tempfile
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -8,35 +11,51 @@ from app.main import app
 from app.database import get_db
 from app.models.base import Base
 
-# In-memory SQLite database for testing
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+@pytest.fixture(scope="function")
+def client_and_db():
+    """Provide a test client and a session that share one temporary SQLite database file."""
+    db_fd, db_path = tempfile.mkstemp(suffix=".db")
+    engine = None
 
-def override_get_db():
-    """Override database dependency for testing."""
     try:
-        db = TestingSessionLocal()
-        yield db
+        engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        Base.metadata.create_all(bind=engine)
+        TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+        def override_get_db():
+            db_session = TestingSessionLocal()
+            try:
+                yield db_session
+            finally:
+                db_session.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        db_session = TestingSessionLocal()
+        try:
+            yield TestClient(app), db_session
+        finally:
+            db_session.close()
+
     finally:
-        db.close()
+        app.dependency_overrides.clear()
+        if engine is not None:
+            engine.dispose()
+        os.close(db_fd)
+        os.unlink(db_path)
 
 
-@pytest.fixture(scope="function")
-def db():
-    """Create test database tables and provide session."""
-    Base.metadata.create_all(bind=engine)
-    yield TestingSessionLocal()
-    Base.metadata.drop_all(bind=engine)
+@pytest.fixture
+def client(client_and_db):
+    """Extract client from combined fixture."""
+    return client_and_db[0]
 
 
-@pytest.fixture(scope="function")
-def client(db):
-    """Provide test client with overridden database dependency."""
-    app.dependency_overrides[get_db] = override_get_db
-    yield TestClient(app)
-    app.dependency_overrides.clear()
+@pytest.fixture
+def db(client_and_db):
+    """Extract db session from combined fixture."""
+    return client_and_db[1]

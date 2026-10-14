@@ -3,9 +3,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.database import init_db
 from app.api import health
-from app.api.v1 import materials
+from app.api.v1 import materials, reference
 
 app = FastAPI(
     title=settings.app_name,
@@ -25,15 +24,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize database on startup
-@app.on_event("startup")
-def startup():
-    init_db()
-
-
 # Include routers
 app.include_router(health.router)
 app.include_router(materials.router)
+app.include_router(reference.router)
 
 
 @app.get("/")

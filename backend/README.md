@@ -9,7 +9,7 @@ This is the FastAPI backend foundation for the Shipbuilding ERP Dashboard. Modul
 - CORS-configured FastAPI application
 - Health check and API documentation endpoints
 - Pydantic validation schemas
-- SQLite database with SQLAlchemy ORM
+- PostgreSQL database (SQLite still supported for tests) with SQLAlchemy ORM and Alembic migrations
 - Comprehensive test suite
 
 **Status:** Phase 1 Backend Foundation (Ready for Module 1 Inventory CRUD implementation)
@@ -45,11 +45,14 @@ Copy-Item ".env.example" ".env"
 # Edit .env if needed
 ```
 
-5. **Initialize database:**
+5. **Create the PostgreSQL database and apply migrations:**
+
+Create an empty database (for example `dockyard_inventory`) and a login role in PostgreSQL, put the URL in `backend\.env` as `DATABASE_URL=postgresql+psycopg://USER:PASSWORD@localhost:5432/dockyard_inventory`, then:
 ```powershell
-# Database is auto-created on first run, or manually:
-python -c "from app.database import init_db; init_db()"
+alembic upgrade head      # create/upgrade tables
+alembic current           # show the applied revision
 ```
+After changing a model: `alembic revision --autogenerate -m "describe change"`, review the generated file, then `alembic upgrade head`. The server no longer creates tables on startup.
 
 ### Running the Server
 
@@ -140,7 +143,8 @@ backend/
 │   ├── api/
 │   │   ├── health.py           # GET /health
 │   │   └── v1/
-│   │       └── materials.py    # GET /api/v1/materials (stub)
+│   │       ├── materials.py    # Materials CRUD
+│   │       └── reference.py    # Reference data lookups
 │   └── services/               # Business logic (to be populated)
 ├── tests/
 │   ├── conftest.py             # Pytest fixtures & in-memory DB
@@ -263,14 +267,20 @@ Material ←→ MaterialTransaction
 - `GET /api/redoc` — ReDoc documentation
 - `GET /api/openapi.json` — OpenAPI schema
 
-### Materials (Phase 1 Stub)
-- `GET /api/v1/materials` — List materials (stub endpoint, returns empty dataset)
+### Materials
+- `GET /api/v1/materials` — List, newest first. Query: `skip`, `limit` (≤1000), `search` (ID/name/batch), `category`, `yard`, `status_filter`
+- `GET /api/v1/materials/{id}` — Material detail (404 if missing)
+- `POST /api/v1/materials` — Create (201; 409 duplicate ID; 422 unknown category/yard/location/ship, location or ship in another yard, or available + reserved > quantity)
+- `PATCH /api/v1/materials/{id}` — Partial update; quantities and yard/location/ship consistency are checked against the merged result; `null` is only allowed for `location_id` and `ship_id`
+- `DELETE /api/v1/materials/{id}` — Delete (409 if the material has transactions)
 
-**Full Materials CRUD endpoints** (Phase 1, to be implemented):
-- `GET /api/v1/materials/{id}` — Get material detail
-- `POST /api/v1/materials` — Create material
-- `PATCH /api/v1/materials/{id}` — Update material
-- `DELETE /api/v1/materials/{id}` — Delete material
+### Reference data
+- `GET /api/v1/reference-data` — Categories, yards, storage locations and ships for forms and filters (read-only)
+
+To load development reference data (insert-only, idempotent, creates no materials):
+```powershell
+python -m scripts.seed_reference_data
+```
 
 ## CORS Configuration
 
@@ -291,7 +301,7 @@ Settings are managed by Pydantic `BaseSettings` in `app/config.py`. Priority:
 
 **Key settings:**
 ```
-DATABASE_URL=sqlite:///./dockyard_materials.db
+DATABASE_URL=postgresql+psycopg://USER:PASSWORD@localhost:5432/dockyard_inventory
 APP_NAME=Dockyard Materials Command
 APP_VERSION=1.0.0
 DEBUG=True
@@ -322,7 +332,6 @@ SERVER_PORT=8000
 - AI analytics endpoints
 - Chat/assistant backend
 - Offline sync snapshots
-- Database migrations (Alembic)
 - User authentication/authorization
 - Production-grade error handling
 
