@@ -5,6 +5,8 @@ outstanding = ordered - received - cancelled. Rejected quantities are recorded f
 stay outstanding so the supplier can redeliver.
 """
 
+from datetime import date
+from decimal import Decimal
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
@@ -26,6 +28,10 @@ class PurchaseOrderStatus(str, PyEnum):
     RECEIVED = "Received"
     CANCELLED = "Cancelled"
     CLOSED = "Closed"
+
+
+# Approved orders that can still receive goods.
+OPEN_PURCHASE_ORDER_STATUSES = (PurchaseOrderStatus.APPROVED, PurchaseOrderStatus.PARTIALLY_RECEIVED)
 
 
 class PurchaseOrder(Base, TimestampMixin):
@@ -56,10 +62,41 @@ class PurchaseOrder(Base, TimestampMixin):
     supplier = relationship("Supplier")
     lines = relationship("PurchaseOrderLine", back_populates="purchase_order", order_by="PurchaseOrderLine.line_no")
     events = relationship("PurchaseOrderEvent", back_populates="purchase_order", order_by="PurchaseOrderEvent.id")
+    receipts = relationship("GoodsReceipt", back_populates="purchase_order", order_by="GoodsReceipt.id")
 
     @property
     def display_id(self) -> str:
         return f"PO-{self.id:05d}"
+
+    @property
+    def currency(self) -> str | None:
+        """All lines share one currency (enforced when lines are written); None for an empty draft."""
+        return self.lines[0].currency if self.lines else None
+
+    @property
+    def total_value(self) -> Decimal:
+        return sum((l.line_total for l in self.lines), Decimal("0"))
+
+    @property
+    def outstanding_value(self) -> Decimal:
+        return sum((l.outstanding_quantity * l.unit_price for l in self.lines), Decimal("0"))
+
+    @property
+    def ordered_quantity(self) -> int:
+        return sum(l.ordered_quantity for l in self.lines)
+
+    @property
+    def received_quantity(self) -> int:
+        return sum(l.received_quantity for l in self.lines)
+
+    @property
+    def is_overdue(self) -> bool:
+        return (
+            self.status in OPEN_PURCHASE_ORDER_STATUSES
+            and self.expected_delivery_date is not None
+            and self.expected_delivery_date < date.today()
+            and any(l.outstanding_quantity > 0 for l in self.lines)
+        )
 
 
 class PurchaseOrderLine(Base, TimestampMixin):
@@ -101,6 +138,10 @@ class PurchaseOrderLine(Base, TimestampMixin):
     @property
     def outstanding_quantity(self) -> int:
         return self.ordered_quantity - self.received_quantity - self.cancelled_quantity
+
+    @property
+    def line_total(self) -> Decimal:
+        return self.ordered_quantity * self.unit_price
 
 
 class PurchaseOrderEvent(Base, TimestampMixin):
