@@ -53,7 +53,9 @@ export type TransferSummary = {
   awaiting_approval: number;
   ready_to_dispatch: number;
   in_transit: number;
+  pending: number;
   due_today: number;
+  overdue: number;
   received_this_week: number;
 };
 

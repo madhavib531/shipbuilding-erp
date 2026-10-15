@@ -22,6 +22,10 @@ class TransferStatus(str, PyEnum):
     CANCELLED = "Cancelled"
 
 
+# Transfers still awaiting an action; RECEIVED, REJECTED and CANCELLED are final.
+PENDING_TRANSFER_STATUSES = (TransferStatus.REQUESTED, TransferStatus.APPROVED, TransferStatus.DISPATCHED)
+
+
 class MaterialTransfer(Base, TimestampMixin):
     """Movement of stock from one batch to a destination yard and optional location."""
     __tablename__ = "material_transfers"

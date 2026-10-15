@@ -376,5 +376,60 @@ class TestQueries:
         assert client.get("/api/v1/transfers?material_id=M1-Y2").json()["data"]["total"] == 1
 
         s = client.get("/api/v1/transfers/summary").json()["data"]
-        assert s == {"awaiting_approval": 1, "ready_to_dispatch": 1, "in_transit": 1, "due_today": 1, "received_this_week": 1}
+        assert s == {"awaiting_approval": 1, "ready_to_dispatch": 1, "in_transit": 1, "pending": 3,
+                     "due_today": 1, "overdue": 0, "received_this_week": 1}
         assert transfer(client, d)["expected_arrival"] == __import__("datetime").date.today().isoformat()
+
+
+def summary(client):
+    return client.get("/api/v1/transfers/summary").json()["data"]
+
+
+class TestPendingSummary:
+    def test_pending_counts_open_transfers_through_the_lifecycle(self, client, world):
+        assert summary(client)["pending"] == 0
+        tid = create(client).json()["data"]["id"]
+        assert summary(client)["pending"] == 1, "requested is pending"
+        act(client, tid, "approve")
+        assert summary(client)["pending"] == 1, "approved is pending"
+        act(client, tid, "dispatch")
+        assert summary(client)["pending"] == 1, "in transit is pending"
+        act(client, tid, "receive", destination_material_id="M1-Y2")
+        assert summary(client)["pending"] == 0, "received is final"
+
+    @pytest.mark.parametrize("setup, action", [("requested", "reject"), ("requested", "cancel"), ("approved", "cancel")])
+    def test_rejected_and_cancelled_leave_pending(self, client, world, setup, action):
+        tid = create(client).json()["data"]["id"] if setup == "requested" else approved(client)
+        assert summary(client)["pending"] == 1
+        assert act(client, tid, action, reason="not needed").status_code == 200
+        assert summary(client)["pending"] == 0
+
+    def test_failed_transition_does_not_change_pending(self, client, world):
+        tid = dispatched(client)
+        assert act(client, tid, "cancel", reason="too late").status_code == 409
+        assert summary(client)["pending"] == 1
+
+    def test_pending_is_sum_of_open_status_counts(self, client, world):
+        create(client, quantity=1)
+        approved(client, quantity=1)
+        dispatched(client, quantity=1)
+        received = dispatched(client, quantity=1)
+        act(client, received, "receive", destination_material_id="M1-Y2")
+        act(client, create(client, quantity=1).json()["data"]["id"], "reject", reason="no")
+        act(client, approved(client, quantity=1), "cancel", reason="no")
+        s = summary(client)
+        assert (s["awaiting_approval"], s["ready_to_dispatch"], s["in_transit"]) == (1, 1, 1)
+        assert s["pending"] == s["awaiting_approval"] + s["ready_to_dispatch"] + s["in_transit"] == 3
+
+    def test_overdue_counts_only_in_transit_past_expected_arrival(self, client, world):
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        today = date.today().isoformat()
+        late = dispatched(client, quantity=1, expected_arrival=yesterday)
+        approved(client, quantity=1, expected_arrival=yesterday)   # not dispatched: not overdue
+        dispatched(client, quantity=1, expected_arrival=today)     # due today: not overdue
+        dispatched(client, quantity=1)                             # no expected date: not overdue
+        s = summary(client)
+        assert (s["overdue"], s["due_today"], s["pending"]) == (1, 1, 4)
+        act(client, late, "receive", destination_material_id="M1-Y2")
+        assert summary(client)["overdue"] == 0

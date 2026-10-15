@@ -101,11 +101,40 @@ function Topbar({ onMenu, onNavigate }: { onMenu: () => void; onNavigate: (page:
   </header>;
 }
 
+type KpiView = { value: string; delta: string; tone: "success" | "danger" | "neutral"; detail: string };
+
+function pendingTransfersKpi(summary: TransferSummary | null, error: string): KpiView {
+  if (error) return { value: "—", delta: "Unavailable", tone: "neutral", detail: "Transfer data couldn’t be loaded" };
+  if (!summary) return { value: "—", delta: "Loading", tone: "neutral", detail: "Loading the transfer queue…" };
+  return {
+    value: String(summary.pending),
+    delta: summary.overdue ? `${summary.overdue} overdue` : "None overdue",
+    tone: summary.overdue ? "danger" : "success",
+    detail: `${summary.awaiting_approval} to approve · ${summary.ready_to_dispatch} to dispatch · ${summary.in_transit} in transit`,
+  };
+}
+
 function Dashboard({ onNavigate }: { onNavigate: (page: PageName) => void }) {
+  const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
+  const [transferError, setTransferError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getTransferSummary(controller.signal)
+      .then(setTransferSummary)
+      .catch((err) => { if (!controller.signal.aborted) setTransferError(err instanceof Error ? err.message : String(err)); });
+    return () => controller.abort();
+  }, []);
+
+  const view = (kpi: (typeof kpis)[number]): KpiView =>
+    kpi.label === "Pending transfers"
+      ? pendingTransfersKpi(transferSummary, transferError)
+      : { value: kpi.value, delta: kpi.delta, tone: kpi.trend === "up" ? "success" : "danger", detail: kpi.detail };
+
   return <>
     <PageHeader eyebrow="Operations overview" title="Good morning, Maya" description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download">Export report</Button><Button icon="plus" onClick={() => onNavigate("Inventory")}>Receive material</Button></>}/>
     <div className="kpi-grid">
-      {kpis.map((kpi, index) => <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={index === 0 ? "analytics" : index === 1 ? "box" : index === 2 ? "warning" : "movement"}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{kpi.value}</strong><Badge tone={kpi.trend === "up" ? "success" : "danger"}>{kpi.delta}</Badge></div><p>{kpi.detail}</p></Card>)}
+      {kpis.map((kpi, index) => { const v = view(kpi); return <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={index === 0 ? "analytics" : index === 1 ? "box" : index === 2 ? "warning" : "movement"}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{v.value}</strong><Badge tone={v.tone}>{v.delta}</Badge></div><p title={kpi.label === "Pending transfers" && transferError ? transferError : undefined}>{v.detail}</p></Card>; })}
     </div>
     <div className="dashboard-grid">
       <Card className="chart-card span-2">

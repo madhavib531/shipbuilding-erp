@@ -21,7 +21,9 @@ from app.models.facility import StorageLocation, Yard
 from app.models.material import Material
 from app.models.program import Ship
 from app.models.transaction import MaterialTransaction, TransactionType
-from app.models.transfer import MaterialTransfer, MaterialTransferEvent, TransferStatus as S
+from app.models.transfer import (
+    PENDING_TRANSFER_STATUSES, MaterialTransfer, MaterialTransferEvent, TransferStatus as S,
+)
 from app.schemas.transfer import TransferCreate, TransferReceive
 
 _DETAIL_OPTIONS = (
@@ -69,9 +71,14 @@ def list_transfers(db: Session, statuses: list[S], material_id: str, yard_id: st
 
 def summary(db: Session) -> dict:
     counts = dict(db.execute(select(MaterialTransfer.status, func.count()).group_by(MaterialTransfer.status)).all())
+    today = date.today()
     due_today = db.scalar(
         select(func.count()).select_from(MaterialTransfer)
-        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival == date.today())
+        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival == today)
+    )
+    overdue = db.scalar(
+        select(func.count()).select_from(MaterialTransfer)
+        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival < today)
     )
     received_this_week = db.scalar(
         select(func.count()).select_from(MaterialTransferEvent).where(
@@ -83,7 +90,9 @@ def summary(db: Session) -> dict:
         "awaiting_approval": counts.get(S.REQUESTED, 0),
         "ready_to_dispatch": counts.get(S.APPROVED, 0),
         "in_transit": counts.get(S.DISPATCHED, 0),
+        "pending": sum(counts.get(s, 0) for s in PENDING_TRANSFER_STATUSES),
         "due_today": due_today,
+        "overdue": overdue,
         "received_this_week": received_this_week,
     }
 
