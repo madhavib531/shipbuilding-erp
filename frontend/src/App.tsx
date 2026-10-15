@@ -3,7 +3,6 @@ import {
   audits,
   materials,
   navItems,
-  purchaseOrders,
   type PageName,
 } from "./data/mockData";
 import {
@@ -27,6 +26,11 @@ import { TransferDialog } from "./components/TransferDialog";
 import { TransferActionDialog } from "./components/TransferActionDialog";
 import { InspectionDialog, inspectionTone } from "./components/InspectionDialog";
 import { INSPECTION_STATUSES, getInspectionSummary, listInspections, type Inspection, type InspectionStatus, type InspectionSummary } from "./api/inspections";
+import { PurchaseOrderDialog } from "./components/PurchaseOrderDialog";
+import { PurchaseOrderDetailDialog, orderTone } from "./components/PurchaseOrderDetailDialog";
+import { SupplierDialog } from "./components/SupplierDialog";
+import { PURCHASE_ORDER_STATUSES, formatMoney, getPurchaseOrderSummary, listPurchaseOrders, type PurchaseOrder, type PurchaseOrderStatus, type PurchaseOrderSummary } from "./api/purchaseOrders";
+import { SUPPLIER_STATUSES, listSuppliers, type Supplier, type SupplierStatus } from "./api/suppliers";
 import { CURRENT_USER } from "./currentUser";
 
 const INVENTORY_PAGE_SIZE = 25;
@@ -368,10 +372,185 @@ function QRTracking() {
   </>;
 }
 
-function Procurement() {
-  return <><PageHeader eyebrow="Supply chain" title="Procurement" description="Monitor suppliers, purchase orders and inbound delivery performance." actions={<Button icon="plus">New purchase order</Button>}/>
-    <div className="mini-kpis">{[["Open PO value","$2.18M","info"],["Due this week","14","purple"],["Partial receipts","6","warning"],["Overdue orders","3","danger"]].map(([label,value,tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={tone as "warning"}>Updated today</Badge></Card>)}</div>
-    <Card className="table-card"><div className="table-toolbar"><Input icon="search" placeholder="Search suppliers or purchase orders…"/><div className="toolbar-filters"><Select><option>All suppliers</option><option>Nordic Marine Steel</option></Select><Button variant="secondary" icon="filter">Filters</Button></div></div><div className="table-scroll"><table><thead><tr><th>Purchase order</th><th>Supplier</th><th>Material</th><th>Delivery</th><th>Receipt</th><th>Status</th></tr></thead><tbody>{purchaseOrders.map(po => <tr key={po.id}><td><strong className="mono">{po.id}</strong><small>{po.value}</small></td><td><strong>{po.supplier}</strong><small>Approved supplier</small></td><td><strong>{po.material}</strong><small>Production material</small></td><td><strong>{po.delivery}</strong><small>{po.status === "Overdue" ? "6 days overdue" : "Confirmed date"}</small></td><td><strong>{po.received}% received</strong><Progress value={po.received}/></td><td><Badge tone={statusTone(po.status)}>{po.status}</Badge></td></tr>)}</tbody></table></div></Card>
+const PROCUREMENT_PAGE_SIZE = 25;
+
+const supplierTone = (status: string) =>
+  status === "Approved" ? "success" as const : status === "Blocked" ? "danger" as const : status === "Inactive" ? "neutral" as const : "warning" as const;
+
+const formatDay = (day: string) =>
+  new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+function deliveryNote(po: PurchaseOrder) {
+  if (!po.expected_delivery_date) return "No date set";
+  if (po.is_overdue) {
+    const days = Math.floor((Date.now() - new Date(`${po.expected_delivery_date}T00:00:00`).getTime()) / 86_400_000);
+    return `${days} day${days === 1 ? "" : "s"} overdue`;
+  }
+  return po.status === "Draft" ? "Planned date" : ["Approved", "Partially received"].includes(po.status) ? "Expected" : "Delivery date";
+}
+
+function ProcurementOrders({ suppliers, reloadKey, onOpen }: { suppliers: Supplier[]; reloadKey: number; onOpen: (id: number) => void }) {
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [supplierId, setSupplierId] = useState("");
+  const [statusFilter, setStatusFilter] = useState<PurchaseOrderStatus | "">("");
+  const [skip, setSkip] = useState(0);
+  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [items, setItems] = useState<PurchaseOrder[]>([]);
+  const [total, setTotal] = useState(0);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState("loading");
+    listPurchaseOrders({ skip, limit: PROCUREMENT_PAGE_SIZE, search, supplierId, status: statusFilter || undefined }, controller.signal)
+      .then(({ purchase_orders, total: count }) => { setItems(purchase_orders); setTotal(count); setState(purchase_orders.length ? "ready" : "empty"); })
+      .catch((err) => { if (!controller.signal.aborted) { setLoadError(err instanceof Error ? err.message : String(err)); setState("error"); } });
+    return () => controller.abort();
+  }, [skip, search, supplierId, statusFilter, reloadKey, retryKey]);
+
+  const firstShown = total === 0 ? 0 : skip + 1;
+  return <>
+    <div className="table-toolbar">
+      <Input icon="search" placeholder="Search PO number, supplier, material or part number…" value={query} onChange={(e) => setQuery(e.target.value)}/>
+      <div className="toolbar-filters">
+        <Select aria-label="Filter by supplier" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setSkip(0); }}><option value="">All suppliers</option>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select>
+        <Select aria-label="Filter by status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as PurchaseOrderStatus | ""); setSkip(0); }}><option value="">All statuses</option>{PURCHASE_ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}</Select>
+      </div>
+    </div>
+    {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
+    {state !== "ready"
+      ? <StatePanel type={state} onRetry={() => setRetryKey((k) => k + 1)} title={state === "loading" ? "Loading purchase orders" : state === "empty" ? "No purchase orders here" : "Purchase orders couldn’t be loaded"} message={state === "loading" ? "Fetching orders…" : state === "empty" ? "Use New purchase order to raise a draft for an approved supplier." : undefined}/>
+      : <div className="table-scroll"><table><thead><tr><th>Purchase order</th><th>Supplier</th><th>Material</th><th>Delivery</th><th>Receipt</th><th>Status</th></tr></thead><tbody>{items.map((po) => {
+        const pct = po.ordered_quantity ? Math.round(po.received_quantity / po.ordered_quantity * 100) : 0;
+        return <tr key={po.id}>
+          <td><button className="link-button mono" style={{ padding: 0, fontSize: 10 }} onClick={() => onOpen(po.id)}>{po.display_id}</button><small>{po.lines.length ? formatMoney(po.total_value, po.currency) : "No lines yet"}</small></td>
+          <td><strong>{po.supplier.name}</strong><small>{po.supplier.status} supplier</small></td>
+          <td><strong>{po.lines[0]?.description ?? "—"}</strong><small>{po.lines.length > 1 ? `+${po.lines.length - 1} more line${po.lines.length === 2 ? "" : "s"}` : po.lines[0]?.category.name ?? "Draft without lines"}</small></td>
+          <td><strong>{po.expected_delivery_date ? formatDay(po.expected_delivery_date) : "—"}</strong><small>{deliveryNote(po)}</small></td>
+          <td><strong>{pct}% received</strong><Progress value={pct}/></td>
+          <td><Badge tone={po.is_overdue ? "danger" : orderTone(po.status)}>{po.is_overdue ? "Overdue" : po.status}</Badge></td>
+        </tr>;
+      })}</tbody></table></div>}
+    <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} purchase orders` : `${total} purchase orders`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
+  </>;
+}
+
+function ProcurementSuppliers({ reloadKey, onEdit }: { reloadKey: number; onEdit: (supplier?: Supplier) => void }) {
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<SupplierStatus | "">("");
+  const [skip, setSkip] = useState(0);
+  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [items, setItems] = useState<Supplier[]>([]);
+  const [total, setTotal] = useState(0);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState("loading");
+    listSuppliers({ skip, limit: PROCUREMENT_PAGE_SIZE, search, status: statusFilter || undefined }, controller.signal)
+      .then(({ suppliers, total: count }) => { setItems(suppliers); setTotal(count); setState(suppliers.length ? "ready" : "empty"); })
+      .catch((err) => { if (!controller.signal.aborted) { setLoadError(err instanceof Error ? err.message : String(err)); setState("error"); } });
+    return () => controller.abort();
+  }, [skip, search, statusFilter, reloadKey, retryKey]);
+
+  const firstShown = total === 0 ? 0 : skip + 1;
+  return <>
+    <div className="table-toolbar">
+      <Input icon="search" placeholder="Search by ID, name, contact or country…" value={query} onChange={(e) => setQuery(e.target.value)}/>
+      <div className="toolbar-filters">
+        <Select aria-label="Filter by supplier status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as SupplierStatus | ""); setSkip(0); }}><option value="">All statuses</option>{SUPPLIER_STATUSES.map((s) => <option key={s}>{s}</option>)}</Select>
+        <Button variant="secondary" icon="plus" onClick={() => onEdit()}>Add supplier</Button>
+      </div>
+    </div>
+    {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
+    {state !== "ready"
+      ? <StatePanel type={state} onRetry={() => setRetryKey((k) => k + 1)} title={state === "loading" ? "Loading suppliers" : state === "empty" ? "No suppliers here" : "Suppliers couldn’t be loaded"} message={state === "loading" ? "Fetching the supplier directory…" : state === "empty" ? "Use Add supplier to register a vendor before raising purchase orders." : undefined}/>
+      : <div className="table-scroll"><table><thead><tr><th>Supplier</th><th>Contact</th><th>Country</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map((s) => <tr key={s.id}>
+        <td><strong>{s.name}</strong><small>{s.id}</small></td>
+        <td><strong>{s.contact_person ?? "—"}</strong><small>{[s.contact_email, s.contact_phone].filter(Boolean).join(" · ") || "No contact details"}</small></td>
+        <td><strong>{s.country ?? "—"}</strong></td>
+        <td><Badge tone={supplierTone(s.status)}>{s.status}</Badge></td>
+        <td><button className="icon-button" aria-label={`Edit ${s.id}`} title="Edit supplier" onClick={() => onEdit(s)}><Icon name="more"/></button></td>
+      </tr>)}</tbody></table></div>}
+    <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} suppliers` : `${total} suppliers`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
+  </>;
+}
+
+function Procurement({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
+  const [tab, setTab] = useState<"orders" | "suppliers">("orders");
+  const [refs, setRefs] = useState<ReferenceData | null>(null);
+  const [refsError, setRefsError] = useState("");
+  const [summary, setSummary] = useState<PurchaseOrderSummary | null>(null);
+  const [summaryError, setSummaryError] = useState("");
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [supplierDialog, setSupplierDialog] = useState<{ supplier?: Supplier } | null>(null);
+  const [toast, showToast] = useToast();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getReferenceData(controller.signal)
+      .then(setRefs)
+      .catch((err) => { if (!controller.signal.aborted) setRefsError(`Categories, yards and locations could not be loaded: ${err.message}`); });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getPurchaseOrderSummary(controller.signal)
+      .then((s) => { setSummary(s); setSummaryError(""); })
+      .catch((err) => { if (!controller.signal.aborted) { setSummary(null); setSummaryError(err instanceof Error ? err.message : String(err)); } });
+    listSuppliers({ skip: 0, limit: 200 }, controller.signal)
+      .then(({ suppliers: all }) => setSuppliers(all))
+      .catch(() => { if (!controller.signal.aborted) setSuppliers([]); });
+    return () => controller.abort();
+  }, [reloadKey]);
+
+  const changed = useCallback((message: string) => {
+    showToast(message);
+    setReloadKey((k) => k + 1);
+    onMaterialsChanged();  // receipts change stock
+  }, [showToast, onMaterialsChanged]);
+
+  const live = (value: number | undefined) => (summary ? String(value) : "—");
+  const badge = summaryError ? "Unavailable" : summary ? "Live" : "Loading";
+  const [firstValue, ...otherValues] = summary?.open_value ?? [];
+  const openValue = !summary ? "—" : firstValue ? formatMoney(firstValue.amount, firstValue.currency) : formatMoney(0, null);
+  const cards: [string, string, string, "info" | "purple" | "warning" | "danger"][] = [
+    ["Open PO value", openValue, otherValues.length ? `+${otherValues.length} currenc${otherValues.length === 1 ? "y" : "ies"}` : badge, "info"],
+    ["Due this week", live(summary?.due_this_week), badge, "purple"],
+    ["Partial receipts", live(summary?.partially_received), badge, "warning"],
+    ["Overdue orders", live(summary?.overdue), badge, "danger"],
+  ];
+
+  return <><PageHeader eyebrow="Supply chain" title="Procurement" description="Monitor suppliers, purchase orders and inbound delivery performance." actions={<Button icon="plus" onClick={() => setCreating(true)}>New purchase order</Button>}/>
+    <div className="mini-kpis">{cards.map(([label, value, b, tone]) => <Card key={label}><span>{label}</span><strong title={label === "Open PO value" && otherValues.length ? summary!.open_value.map((v) => formatMoney(v.amount, v.currency)).join(" · ") : undefined}>{value}</strong><Badge tone={b === "Unavailable" || b === "Loading" ? "neutral" : tone}>{b}</Badge></Card>)}</div>
+    <Card className="table-card">
+      <div className="tabs"><button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>Purchase orders</button><button className={tab === "suppliers" ? "active" : ""} onClick={() => setTab("suppliers")}>Suppliers</button></div>
+      {tab === "orders"
+        ? <ProcurementOrders suppliers={suppliers} reloadKey={reloadKey} onOpen={setOpenId}/>
+        : <ProcurementSuppliers reloadKey={reloadKey} onEdit={(supplier) => setSupplierDialog({ supplier })}/>}
+    </Card>
+    {creating && <PurchaseOrderDialog refs={refs} refsError={refsError} onClose={() => setCreating(false)} onDone={(message, id) => { setCreating(false); changed(message); setOpenId(id); }}/>}
+    {openId !== null && <PurchaseOrderDetailDialog orderId={openId} refs={refs} refsError={refsError} onClose={() => setOpenId(null)} onChanged={changed}/>}
+    {supplierDialog && <SupplierDialog supplier={supplierDialog.supplier} onClose={() => setSupplierDialog(null)} onDone={(message) => { setSupplierDialog(null); changed(message); }}/>}
+    <Toast message={toast}/>
   </>;
 }
 
@@ -506,7 +685,7 @@ function CurrentPage({ page, onNavigate, materials, onMaterialsChanged }: { page
     case "Movements": return <Movements/>;
     case "QR Tracking": return <QRTracking/>;
     case "Ships & Yards": return <ShipsYards/>;
-    case "Procurement": return <Procurement/>;
+    case "Procurement": return <Procurement onMaterialsChanged={onMaterialsChanged}/>;
     case "AI Analytics": return <Analytics/>;
     case "AI Assistant": return <Assistant/>;
     case "Quality": return <Quality onMaterialsChanged={onMaterialsChanged}/>;
