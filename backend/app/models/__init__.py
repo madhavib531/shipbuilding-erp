@@ -7,6 +7,7 @@ from app.models.program import Ship, ShipSeries
 from app.models.supplier import Supplier
 from app.models.transaction import MaterialTransaction, TransactionType
 from app.models.transfer import MaterialTransfer, MaterialTransferEvent, TransferStatus
+from app.models.purchase_order import PurchaseOrder, PurchaseOrderEvent, PurchaseOrderLine, PurchaseOrderStatus
 
 __all__ = [
     "Base",
@@ -22,4 +23,8 @@ __all__ = [
     "MaterialTransfer",
     "MaterialTransferEvent",
     "TransferStatus",
+    "PurchaseOrder",
+    "PurchaseOrderLine",
+    "PurchaseOrderEvent",
+    "PurchaseOrderStatus",
 ]
