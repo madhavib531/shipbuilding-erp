@@ -11,8 +11,16 @@ from app.models.transaction import MaterialTransaction
 from app.models.transfer import MaterialTransfer
 from app.schemas.common import SuccessResponse
 from app.schemas.material import MaterialCreate, MaterialUpdate, MaterialRead
+from app.services import material_service
 
 router = APIRouter(prefix="/api/v1/materials", tags=["materials"])
+
+
+# Registered before "/{material_id}" so "summary" is not treated as a material ID.
+@router.get("/summary", response_model=SuccessResponse)
+def material_summary(db: Session = Depends(get_db)):
+    """Batch counts for the dashboard: available, reserved, Low stock (manual status) and active yards."""
+    return SuccessResponse(message="Material summary retrieved successfully", data=material_service.summary(db))
 
 
 @router.get("", response_model=SuccessResponse)

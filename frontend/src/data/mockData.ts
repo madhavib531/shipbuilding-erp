@@ -23,19 +23,6 @@ export const materials: Material[] = [
   { id: "WLD-33082", name: "E7018 Welding Electrodes", category: "Consumables", batch: "WE-8834", quantity: 144, available: 22, reserved: 122, unit: "boxes", yard: "Harbor North", ship: "MV Calypso", status: "Low stock" },
 ];
 
-export const kpis = [
-  { label: "Total stock value", value: "$18.42M", delta: "+2.8%", trend: "up", detail: "Across 3 active yards" },
-  { label: "Available materials", value: "12,480", delta: "94.2%", trend: "up", detail: "742 currently reserved" },
-  { label: "Low-stock items", value: "38", delta: "+6 today", trend: "down", detail: "11 production-critical" },
-  { label: "Pending transfers", value: "17", delta: "5 overdue", trend: "down", detail: "Awaiting yard approval" },
-];
-
-export const alerts = [
-  { title: "Cu-Ni Pipe · 80mm", meta: "East Basin · NS Atlas", amount: "18 lengths left", level: "critical" },
-  { title: "E7018 Welding Electrodes", meta: "Harbor North · MV Calypso", amount: "22 boxes left", level: "warning" },
-  { title: "Marine Epoxy Primer", meta: "Dry Dock 4 · OSV Meridian", amount: "31 drums left", level: "warning" },
-];
-
 export const transfers = [
   { id: "TR-24091", item: "AH36 Steel Plate", route: "Harbor North → East Basin", qty: "48 sheets", status: "Approval needed", date: "Today, 14:30" },
   { id: "TR-24088", item: "Marine Power Cable", route: "East Basin → Dry Dock 4", qty: "320 m", status: "In transit", date: "Today, 09:10" },

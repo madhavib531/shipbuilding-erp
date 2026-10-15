@@ -46,7 +46,18 @@ export type ReferenceData = {
   ships: { id: string; name: string; yard_id: string }[];
 };
 
-export type MaterialQuery = { skip: number; limit: number; search?: string; category?: string; yard?: string };
+export type MaterialQuery = { skip: number; limit: number; search?: string; category?: string; yard?: string; status?: MaterialStatus };
+
+/** Batch counts; "Low stock" is the manually assigned status, not a computed threshold. */
+export type MaterialSummary = {
+  total_batches: number;
+  available_batches: number;
+  available_percent: number;
+  reserved_batches: number;
+  low_stock_batches: number;
+  low_stock_ship_allocated: number;
+  active_yards: number;
+};
 
 type Envelope<T> = { status: string; message: string; data: T };
 
@@ -55,8 +66,13 @@ export async function listMaterials(query: MaterialQuery, signal?: AbortSignal) 
   if (query.search) params.set("search", query.search);
   if (query.category) params.set("category", query.category);
   if (query.yard) params.set("yard", query.yard);
+  if (query.status) params.set("status_filter", query.status);
   const res = await apiRequest<Envelope<{ materials: ApiMaterial[]; total: number }>>(`/api/v1/materials?${params}`, { signal });
   return res.data;
+}
+
+export async function getMaterialSummary(signal?: AbortSignal) {
+  return (await apiRequest<Envelope<MaterialSummary>>("/api/v1/materials/summary", { signal })).data;
 }
 
 export async function getMaterial(id: string, signal?: AbortSignal) {

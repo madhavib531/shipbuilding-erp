@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  alerts,
   audits,
-  kpis,
   materials,
   navItems,
   purchaseOrders,
@@ -22,7 +20,7 @@ import {
   useToast,
   type IconName,
 } from "./components/ui";
-import { getReferenceData, listMaterials, type ApiMaterial, type ReferenceData } from "./api/materials";
+import { getMaterialSummary, getReferenceData, listMaterials, type ApiMaterial, type MaterialSummary, type ReferenceData } from "./api/materials";
 import { TRANSFER_STATUS_LABEL, getTransferSummary, listTransfers, type Transfer, type TransferStatus, type TransferSummary } from "./api/transfers";
 import { MaterialDialog } from "./components/MaterialDialog";
 import { TransferDialog } from "./components/TransferDialog";
@@ -60,7 +58,7 @@ const statusTone = (status: string) => {
   return "info" as const;
 };
 
-function Sidebar({ active, onNavigate, open, onClose }: { active: PageName; onNavigate: (page: PageName) => void; open: boolean; onClose: () => void }) {
+function Sidebar({ active, onNavigate, open, onClose, lowStockCount }: { active: PageName; onNavigate: (page: PageName) => void; open: boolean; onClose: () => void; lowStockCount: number | null }) {
   return <>
     {open && <button className="sidebar-scrim" onClick={onClose} aria-label="Close navigation"/>}
     <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
@@ -71,7 +69,7 @@ function Sidebar({ active, onNavigate, open, onClose }: { active: PageName; onNa
       </div>
       <nav className="nav-list" aria-label="Primary navigation">
         <p className="nav-label">Workspace</p>
-        {navItems.slice(0, 6).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span>{item === "Inventory" && <em>38</em>}</button>)}
+        {navItems.slice(0, 6).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span>{item === "Inventory" && !!lowStockCount && <em title={`${lowStockCount} batch${lowStockCount === 1 ? "" : "es"} flagged Low stock`}>{lowStockCount.toLocaleString()}</em>}</button>)}
         <p className="nav-label">Intelligence</p>
         {navItems.slice(6, 8).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span><i>AI</i></button>)}
         <p className="nav-label">Administration</p>
@@ -102,6 +100,36 @@ function Topbar({ onMenu, onNavigate }: { onMenu: () => void; onNavigate: (page:
 }
 
 type KpiView = { value: string; delta: string; tone: "success" | "danger" | "neutral"; detail: string };
+type MaterialSummaryState = { data: MaterialSummary | null; error: string };
+
+const DASHBOARD_KPIS: { label: string; icon: IconName }[] = [
+  { label: "Total stock value", icon: "analytics" },
+  { label: "Available materials", icon: "box" },
+  { label: "Low-stock items", icon: "warning" },
+  { label: "Pending transfers", icon: "movement" },
+];
+
+function materialKpi(label: string, { data: s, error }: MaterialSummaryState): KpiView {
+  if (error) return { value: "—", delta: "Unavailable", tone: "neutral", detail: "Material data couldn’t be loaded" };
+  if (!s) return { value: "—", delta: "Loading", tone: "neutral", detail: "Loading material counts…" };
+  if (label === "Total stock value") {
+    return { value: "—", delta: "No cost data", tone: "neutral", detail: `Across ${s.active_yards.toLocaleString()} active yard${s.active_yards === 1 ? "" : "s"}` };
+  }
+  if (label === "Available materials") {
+    return {
+      value: s.available_batches.toLocaleString(),
+      delta: s.total_batches ? `${s.available_percent}% of batches` : "No batches",
+      tone: "neutral",
+      detail: `${s.reserved_batches.toLocaleString()} with reserved stock`,
+    };
+  }
+  return {
+    value: s.low_stock_batches.toLocaleString(),
+    delta: "Flagged manually",
+    tone: "neutral",
+    detail: `${s.low_stock_ship_allocated.toLocaleString()} Ship-allocated`,
+  };
+}
 
 function pendingTransfersKpi(summary: TransferSummary | null, error: string): KpiView {
   if (error) return { value: "—", delta: "Unavailable", tone: "neutral", detail: "Transfer data couldn’t be loaded" };
@@ -114,27 +142,33 @@ function pendingTransfersKpi(summary: TransferSummary | null, error: string): Kp
   };
 }
 
-function Dashboard({ onNavigate }: { onNavigate: (page: PageName) => void }) {
+const LOW_STOCK_ALERT_ROWS = 3;
+
+function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => void; materials: MaterialSummaryState }) {
   const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
   const [transferError, setTransferError] = useState("");
+  const [lowStock, setLowStock] = useState<{ items: ApiMaterial[]; total: number } | null>(null);
+  const [lowStockError, setLowStockError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
     getTransferSummary(controller.signal)
       .then(setTransferSummary)
       .catch((err) => { if (!controller.signal.aborted) setTransferError(err instanceof Error ? err.message : String(err)); });
+    listMaterials({ skip: 0, limit: LOW_STOCK_ALERT_ROWS, status: "Low stock" }, controller.signal)
+      .then(({ materials: items, total }) => setLowStock({ items, total }))
+      .catch((err) => { if (!controller.signal.aborted) setLowStockError(err instanceof Error ? err.message : String(err)); });
     return () => controller.abort();
   }, []);
 
-  const view = (kpi: (typeof kpis)[number]): KpiView =>
-    kpi.label === "Pending transfers"
-      ? pendingTransfersKpi(transferSummary, transferError)
-      : { value: kpi.value, delta: kpi.delta, tone: kpi.trend === "up" ? "success" : "danger", detail: kpi.detail };
+  const view = (label: string): KpiView =>
+    label === "Pending transfers" ? pendingTransfersKpi(transferSummary, transferError) : materialKpi(label, materials);
+  const errorFor = (label: string) => (label === "Pending transfers" ? transferError : materials.error) || undefined;
 
   return <>
     <PageHeader eyebrow="Operations overview" title="Good morning, Maya" description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download">Export report</Button><Button icon="plus" onClick={() => onNavigate("Inventory")}>Receive material</Button></>}/>
     <div className="kpi-grid">
-      {kpis.map((kpi, index) => { const v = view(kpi); return <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={index === 0 ? "analytics" : index === 1 ? "box" : index === 2 ? "warning" : "movement"}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{v.value}</strong><Badge tone={v.tone}>{v.delta}</Badge></div><p title={kpi.label === "Pending transfers" && transferError ? transferError : undefined}>{v.detail}</p></Card>; })}
+      {DASHBOARD_KPIS.map((kpi, index) => { const v = view(kpi.label); return <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={kpi.icon}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{v.value}</strong><Badge tone={v.tone}>{v.delta}</Badge></div><p title={errorFor(kpi.label)}>{v.detail}</p></Card>; })}
     </div>
     <div className="dashboard-grid">
       <Card className="chart-card span-2">
@@ -145,8 +179,12 @@ function Dashboard({ onNavigate }: { onNavigate: (page: PageName) => void }) {
         </div>
       </Card>
       <Card className="alert-card">
-        <div className="card-heading"><div><h2>Low-stock alerts</h2><p>Production-critical thresholds</p></div><button className="link-button" onClick={() => onNavigate("Inventory")}>View all</button></div>
-        <div className="alert-list">{alerts.map((alert) => <button className="alert-row" key={alert.title} onClick={() => onNavigate("Inventory")}><span className={`severity ${alert.level}`}><Icon name="warning" size={16}/></span><span><strong>{alert.title}</strong><small>{alert.meta}</small></span><span className="alert-amount">{alert.amount}<Icon name="chevron" size={14}/></span></button>)}</div>
+        <div className="card-heading"><div><h2>Low-stock alerts</h2><p title={lowStockError || undefined}>{lowStockError ? "Unavailable" : !lowStock ? "Loading…" : `${lowStock.total.toLocaleString()} batch${lowStock.total === 1 ? "" : "es"} flagged Low stock`}</p></div><button className="link-button" onClick={() => onNavigate("Inventory")}>View all</button></div>
+        <div className="alert-list">
+          {lowStockError && <p className="muted-copy">Low-stock batches couldn’t be loaded.</p>}
+          {lowStock && lowStock.items.length === 0 && <p className="muted-copy">No batches are flagged Low stock.</p>}
+          {lowStock?.items.map((m) => <button className="alert-row" key={m.id} onClick={() => onNavigate("Inventory")}><span className={`severity ${m.available === 0 ? "critical" : "warning"}`}><Icon name="warning" size={16}/></span><span><strong>{m.name}</strong><small>{m.yard.name} · {m.ship ? `Ship-allocated: ${m.ship.name}` : "Not allocated"}</small></span><span className="alert-amount">{m.available.toLocaleString()} {m.unit} available<Icon name="chevron" size={14}/></span></button>)}
+        </div>
       </Card>
       <Card className="consumption-card">
         <div className="card-heading"><div><h2>Ship-wise consumption</h2><p>Month-to-date by project</p></div><button className="icon-button"><Icon name="more"/></button></div>
@@ -376,9 +414,9 @@ function Settings() {
   return <><PageHeader eyebrow="Workspace administration" title="Settings" description="Manage organization preferences, roles and integrations."/><div className="settings-layout"><Card className="settings-nav">{["General","Roles & access","Notifications","Integrations","Offline sync"].map(t => <button className={tab===t?"active":""} onClick={() => setTab(t)} key={t}><Icon name={t==="Roles & access"?"users":t==="Offline sync"?"wifiOff":"settings"}/>{t}</button>)}</Card><Card className="settings-panel"><h2>{tab}</h2><p>Configure {tab.toLowerCase()} preferences for the materials workspace.</p>{tab === "Roles & access" ? <div className="role-list">{[["Materials Admin","8 members","Full inventory and approval access"],["Yard Manager","14 members","Yard-scoped receiving and transfers"],["Quality Inspector","6 members","Inspection and certificate workflows"],["Viewer","22 members","Read-only operational access"]].map(r => <div key={r[0]}><span className="role-icon"><Icon name="users"/></span><span><strong>{r[0]}</strong><small>{r[2]}</small></span><Badge>{r[1]}</Badge><Button variant="ghost">Edit</Button></div>)}</div> : <div className="settings-form"><label><span>Organization name</span><Input defaultValue="Northstar Marine Works"/></label><label><span>Default yard</span><Select><option>Harbor North</option><option>East Basin</option></Select></label><label><span>Inventory valuation</span><Select><option>Weighted average cost</option><option>FIFO</option></Select></label><label className="toggle-row"><span><strong>Require transfer approval</strong><small>Transfers over $5,000 require a yard manager.</small></span><input type="checkbox" defaultChecked/></label><div className="notice"><Icon name="warning"/>Settings are displayed for demonstration and are not persisted.</div><Button>Save changes</Button></div>}</Card></div></>;
 }
 
-function CurrentPage({ page, onNavigate }: { page: PageName; onNavigate: (p: PageName) => void }) {
+function CurrentPage({ page, onNavigate, materials }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState }) {
   switch (page) {
-    case "Dashboard": return <Dashboard onNavigate={onNavigate}/>;
+    case "Dashboard": return <Dashboard onNavigate={onNavigate} materials={materials}/>;
     case "Inventory": return <Inventory/>;
     case "Movements": return <Movements/>;
     case "QR Tracking": return <QRTracking/>;
@@ -395,5 +433,16 @@ function CurrentPage({ page, onNavigate }: { page: PageName; onNavigate: (p: Pag
 export default function App() {
   const [page, setPage] = useState<PageName>("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage}/><main className="content"><CurrentPage page={page} onNavigate={setPage}/></main></div></div>;
+  const [materials, setMaterials] = useState<MaterialSummaryState>({ data: null, error: "" });
+
+  // One summary feeds the Dashboard cards and the sidebar badge; refreshed on navigation so edits made elsewhere show up.
+  useEffect(() => {
+    const controller = new AbortController();
+    getMaterialSummary(controller.signal)
+      .then((data) => setMaterials({ data, error: "" }))
+      .catch((err) => { if (!controller.signal.aborted) setMaterials({ data: null, error: err instanceof Error ? err.message : String(err) }); });
+    return () => controller.abort();
+  }, [page]);
+
+  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials}/></main></div></div>;
 }
