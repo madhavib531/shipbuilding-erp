@@ -17,6 +17,8 @@ export type ApiMaterial = {
   ship_id: string | null;
   status: MaterialStatus;
   version: number;
+  /** Part of the blocked quantity (quantity − available − reserved) awaiting an inspection decision. */
+  held_quantity: number;
   created_at: string;
   updated_at: string;
   category: { id: string; name: string };

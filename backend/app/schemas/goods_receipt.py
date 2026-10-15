@@ -5,6 +5,8 @@ from typing import Annotated, Optional
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, model_validator
 
+from app.models.inspection import InspectionStatus
+
 
 def _blank_to_none(value):
     return None if isinstance(value, str) and not value.strip() else value
@@ -27,6 +29,8 @@ class GoodsReceiptLineIn(BaseModel):
     destination_material_id: Optional[EntityId] = Field(
         None, description="Existing compatible batch at the receiving yard, or a new batch ID")
     batch: _optional_text(50) = Field(None, description="Batch or supplier lot number; required for a new batch")
+    hold_for_inspection: bool = Field(
+        False, description="Put the accepted quantity on inspection hold in a new batch instead of making it available")
 
     @model_validator(mode="after")
     def check_quantities(self):
@@ -36,6 +40,8 @@ class GoodsReceiptLineIn(BaseModel):
             raise ValueError("rejection_reason is required when goods are rejected")
         if self.accepted_quantity and not self.destination_material_id:
             raise ValueError("destination_material_id is required for accepted goods")
+        if self.hold_for_inspection and not self.accepted_quantity:
+            raise ValueError("hold_for_inspection needs an accepted quantity to hold")
         return self
 
 
@@ -70,6 +76,15 @@ class _OrderLineRef(BaseModel):
     unit: str
 
 
+class _HoldRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    display_id: str
+    status: InspectionStatus
+    quantity: int
+    outstanding_quantity: int
+
+
 class GoodsReceiptLineRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -78,6 +93,7 @@ class GoodsReceiptLineRead(BaseModel):
     rejected_quantity: int
     rejection_reason: Optional[str]
     destination_material_id: Optional[str]
+    inspection_hold: Optional[_HoldRef]
 
 
 class GoodsReceiptRead(BaseModel):

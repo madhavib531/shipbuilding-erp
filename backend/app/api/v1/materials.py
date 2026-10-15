@@ -1,7 +1,7 @@
 """Materials CRUD endpoints."""
 
 from fastapi import APIRouter, Depends, Query, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app.models.material import Material, MaterialCategory, MaterialStatusEnum
@@ -11,7 +11,7 @@ from app.models.transaction import MaterialTransaction
 from app.models.transfer import MaterialTransfer
 from app.schemas.common import SuccessResponse
 from app.schemas.material import MaterialCreate, MaterialUpdate, MaterialRead
-from app.services import material_service
+from app.services import inspection_service, material_service
 
 router = APIRouter(prefix="/api/v1/materials", tags=["materials"])
 
@@ -63,7 +63,8 @@ def list_materials(
 
     total = query.count()
     materials = (
-        query.order_by(Material.created_at.desc(), Material.id)
+        query.options(undefer(Material.held_quantity))
+        .order_by(Material.created_at.desc(), Material.id)
         .offset(skip).limit(limit).all()
     )
 
@@ -297,6 +298,22 @@ def update_material(
             detail=f"available ({available}) + reserved ({reserved}) "
                    f"cannot exceed quantity ({quantity})"
         )
+
+    # Stock on inspection hold changes only through release or rejection; the row lock above keeps it stable.
+    held = inspection_service.held_quantity(db, material_id)
+    if held:
+        if update_data.get("status", MaterialStatusEnum.INSPECTION) != MaterialStatusEnum.INSPECTION:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Material '{material_id}' has {held} {material.unit} on inspection hold; release or "
+                       f"reject it on the Quality page before changing its status"
+            )
+        if available + reserved > quantity - held:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"available ({available}) + reserved ({reserved}) cannot exceed the {quantity - held} "
+                       f"{material.unit} not on inspection hold (quantity {quantity}, {held} held)"
+            )
 
     try:
         for field, value in update_data.items():

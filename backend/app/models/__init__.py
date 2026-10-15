@@ -9,6 +9,7 @@ from app.models.transaction import MaterialTransaction, TransactionType
 from app.models.transfer import MaterialTransfer, MaterialTransferEvent, TransferStatus
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderEvent, PurchaseOrderLine, PurchaseOrderStatus
 from app.models.goods_receipt import GoodsReceipt, GoodsReceiptLine
+from app.models.inspection import InspectionEvent, InspectionHold, InspectionStatus, RejectionDisposition
 
 __all__ = [
     "Base",
@@ -30,4 +31,8 @@ __all__ = [
     "PurchaseOrderStatus",
     "GoodsReceipt",
     "GoodsReceiptLine",
+    "InspectionHold",
+    "InspectionEvent",
+    "InspectionStatus",
+    "RejectionDisposition",
 ]

@@ -25,6 +25,8 @@ import { TRANSFER_STATUS_LABEL, getTransferSummary, listTransfers, type Transfer
 import { MaterialDialog } from "./components/MaterialDialog";
 import { TransferDialog } from "./components/TransferDialog";
 import { TransferActionDialog } from "./components/TransferActionDialog";
+import { InspectionDialog, inspectionTone } from "./components/InspectionDialog";
+import { INSPECTION_STATUSES, getInspectionSummary, listInspections, type Inspection, type InspectionStatus, type InspectionSummary } from "./api/inspections";
 import { CURRENT_USER } from "./currentUser";
 
 const INVENTORY_PAGE_SIZE = 25;
@@ -269,7 +271,7 @@ function Inventory({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
         <div className="toolbar-filters"><Select aria-label="Filter by category" value={category} onChange={(e) => { setCategory(e.target.value); setSkip(0); }}><option value="">All categories</option>{refs?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select><Select aria-label="Filter by yard" value={yard} onChange={(e) => { setYard(e.target.value); setSkip(0); }}><option value="">All yards</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select><Button variant="secondary" icon="filter" disabled title="Additional filters are not available yet">Filters</Button></div>
       </div>
       {state === "error" && <div className="notice" role="alert"><Icon name="warning"/>{loadError}</div>}
-      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`Edit ${item.id}`} title="Edit or delete" onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
+      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved{item.held_quantity ? ` · ${item.held_quantity} on inspection hold` : ""}</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`Edit ${item.id}`} title="Edit or delete" onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
       <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} materials` : `${total} materials`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - INVENTORY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + INVENTORY_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     {dialog && <MaterialDialog material={dialog.material} refs={refs} refsError={refsError} onClose={() => setDialog(null)} onDone={afterSave}/>}
@@ -401,8 +403,91 @@ function ShipsYards() {
   ].map(s => <Card className="entity-card" key={s[0]}><div className="entity-top"><span className="ship-avatar large"><Icon name="ship" size={24}/></span><Badge tone="success">Active</Badge></div><h2>{s[0]}</h2><p>{s[1]} · {s[2]}</p><Progress value={Number(s[3])}/><div className="entity-stats"><span><strong>{s[3]}%</strong><small>Build progress</small></span><span><strong>{s[4]}</strong><small>Allocated value</small></span><span><strong>{s[5]}</strong><small>Material lines</small></span></div><Button variant="secondary">View allocation</Button></Card>)}</div></>;
 }
 
-function Quality() {
-  return <><PageHeader eyebrow="Material assurance" title="Quality inspections" description="Manage inbound inspections, certificates and quarantined material." actions={<Button icon="plus">New inspection</Button>}/><div className="mini-kpis">{[["Awaiting inspection","12","warning"],["Passed this week","86","success"],["In quarantine","4","danger"],["Certificate gaps","7","purple"]].map(([l,v,t]) => <Card key={l}><span>{l}</span><strong>{v}</strong><Badge tone={t as "warning"}>Current</Badge></Card>)}</div><Card className="table-card"><div className="table-toolbar"><Input icon="search" placeholder="Search inspections…"/><Button variant="secondary" icon="filter">Filters</Button></div><div className="table-scroll"><table><thead><tr><th>Inspection</th><th>Material</th><th>Standard</th><th>Inspector</th><th>Due</th><th>Status</th></tr></thead><tbody>{[["QI-10882","DN150 Butterfly Valve","ISO 5208","Owen Brooks","Today","Inspection"],["QI-10879","AH36 Steel Plate","ASTM A131","Nadia King","Mar 28","Passed"],["QI-10871","Marine Power Cable","IEC 60092","Owen Brooks","Mar 29","Pending"],["QI-10868","A-60 Fire Insulation","IMO FTP Code","Sam Rivera","Yesterday","Quarantine"]].map(r => <tr key={r[0]}>{r.slice(0,5).map((c,i) => <td key={c}><strong className={i===0?"mono":""}>{c}</strong>{i===1 && <small>Batch verified</small>}</td>)}<td><Badge tone={r[5]==="Passed"?"success":r[5]==="Quarantine"?"danger":"warning"}>{r[5]}</Badge></td></tr>)}</tbody></table></div></Card></>;
+const QUALITY_PAGE_SIZE = 25;
+
+function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<InspectionStatus | "">("Open");
+  const [skip, setSkip] = useState(0);
+  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [items, setItems] = useState<Inspection[]>([]);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState<InspectionSummary | null>(null);
+  const [summaryError, setSummaryError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [toast, showToast] = useToast();
+
+  useEffect(() => {
+    const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState("loading");
+    getInspectionSummary(controller.signal)
+      .then((s) => { setSummary(s); setSummaryError(""); })
+      .catch((err) => { if (!controller.signal.aborted) { setSummary(null); setSummaryError(err instanceof Error ? err.message : String(err)); } });
+    listInspections({ skip, limit: QUALITY_PAGE_SIZE, search, status: statusFilter || undefined }, controller.signal)
+      .then(({ inspections, total: count }) => {
+        setItems(inspections);
+        setTotal(count);
+        setState(inspections.length === 0 ? "empty" : "ready");
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setState("error");
+      });
+    return () => controller.abort();
+  }, [skip, search, statusFilter, reloadKey]);
+
+  const done = useCallback((message: string) => {
+    setOpenId(null);
+    showToast(message);
+    setReloadKey((k) => k + 1);
+    onMaterialsChanged();
+  }, [showToast, onMaterialsChanged]);
+
+  const live = (value: number | undefined) => (summary ? String(value) : "—");
+  const liveBadge = summaryError ? "Unavailable" : summary ? "Live" : "Loading";
+  const cards: [string, string, string, "warning" | "success" | "danger" | "purple"][] = [
+    ["Awaiting inspection", live(summary?.open), liveBadge, "warning"],
+    ["Passed this week", live(summary?.released_this_week), liveBadge, "success"],
+    ["Rejected this week", live(summary?.rejected_this_week), liveBadge, "danger"],
+    ["Certificate gaps", "—", "Not tracked", "purple"],
+  ];
+  const firstShown = total === 0 ? 0 : skip + 1;
+
+  return <><PageHeader eyebrow="Material assurance" title="Quality inspections" description="Release or reject goods held for inspection on receipt." actions={<Button icon="plus" disabled title="Inspections start when goods are received with Hold for inspection">New inspection</Button>}/>
+    <div className="mini-kpis">{cards.map(([l, v, badge, t]) => <Card key={l}><span>{l}</span><strong>{v}</strong><Badge tone={badge === "Live" ? t : "neutral"}>{badge}</Badge></Card>)}</div>
+    <Card className="table-card">
+      <div className="table-toolbar">
+        <Input icon="search" placeholder="Search by inspection number, material or batch…" value={query} onChange={(e) => setQuery(e.target.value)}/>
+        <div className="toolbar-filters"><Select aria-label="Filter by status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as InspectionStatus | ""); setSkip(0); }}><option value="">All statuses</option>{INSPECTION_STATUSES.map((s) => <option key={s} value={s}>{s === "Open" ? "Awaiting decision" : s}</option>)}</Select></div>
+      </div>
+      {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
+      {state !== "ready"
+        ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)} title={state === "loading" ? "Loading inspections" : state === "empty" ? "No inspections here" : "Inspections couldn’t be loaded"} message={state === "loading" ? "Fetching inspection holds…" : state === "empty" ? "Goods received with Hold for inspection appear here until they are released or rejected." : undefined}/>
+        : <div className="table-scroll"><table><thead><tr><th>Inspection</th><th>Material</th><th>Source</th><th>Quantity</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map((h) => {
+          const receipt = h.goods_receipt_line.receipt;
+          return <tr key={h.id}>
+            <td><strong className="mono">{h.display_id}</strong><small>Held {formatMoment(h.created_at)} by {h.created_by}</small></td>
+            <td><strong>{h.material.name}</strong><small>{h.material.id} · Lot {h.material.batch} · {h.material.yard.name}</small></td>
+            <td><strong className="mono">{receipt.purchase_order.display_id}</strong><small>{receipt.display_id} · {receipt.purchase_order.supplier.name}</small></td>
+            <td><strong>{h.outstanding_quantity} {h.material.unit} awaiting</strong><small>{h.released_quantity} released · {h.rejected_quantity} rejected of {h.quantity}</small></td>
+            <td><Badge tone={inspectionTone(h.status)}>{h.status}</Badge></td>
+            <td><Button variant={h.status === "Open" ? "primary" : "secondary"} onClick={() => setOpenId(h.id)}>{h.status === "Open" ? "Review" : "Details"}</Button></td>
+          </tr>;
+        })}</tbody></table></div>}
+      <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} inspections` : `${total} inspections`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - QUALITY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + QUALITY_PAGE_SIZE)}>Next</Button></div></div>
+    </Card>
+    {openId !== null && <InspectionDialog inspectionId={openId} onClose={() => setOpenId(null)} onDone={done}/>}
+    <Toast message={toast}/>
+  </>;
 }
 
 function AuditLogs() {
@@ -424,7 +509,7 @@ function CurrentPage({ page, onNavigate, materials, onMaterialsChanged }: { page
     case "Procurement": return <Procurement/>;
     case "AI Analytics": return <Analytics/>;
     case "AI Assistant": return <Assistant/>;
-    case "Quality": return <Quality/>;
+    case "Quality": return <Quality onMaterialsChanged={onMaterialsChanged}/>;
     case "Audit Logs": return <AuditLogs/>;
     case "Settings": return <Settings/>;
   }

@@ -101,6 +101,7 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
   };
 
   const formDisabled = busy || !refs;
+  const held = material?.held_quantity ?? 0;
 
   return <div className="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="material-dialog-title">
     <button className="dialog-scrim" onClick={onClose} aria-label="Close dialog"/>
@@ -119,7 +120,7 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         <label><span>Category</span><Select name="category_id" value={form.category_id} onChange={(e) => set("category_id", e.target.value)} disabled={formDisabled}><option value="">Select category</option>{refs?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></label>
         <label><span>Batch</span><Input name="batch" placeholder="e.g. B-2408-19" value={form.batch} onChange={(e) => set("batch", e.target.value)} maxLength={50} disabled={formDisabled}/></label>
         <label><span>Unit</span><Input name="unit" placeholder="e.g. sheets" value={form.unit} onChange={(e) => set("unit", e.target.value)} maxLength={20} disabled={formDisabled}/></label>
-        <label><span>Status</span><Select name="status" value={form.status} onChange={(e) => set("status", e.target.value as MaterialStatus)} disabled={formDisabled}>{MATERIAL_STATUSES.map((s) => <option key={s}>{s}</option>)}</Select></label>
+        <label><span>Status</span><Select name="status" value={form.status} onChange={(e) => set("status", e.target.value as MaterialStatus)} disabled={formDisabled || held > 0} title={held > 0 ? "Set by the inspection workflow while stock is on hold" : undefined}>{MATERIAL_STATUSES.map((s) => <option key={s}>{s}</option>)}</Select></label>
         <label><span>Total quantity</span><Input name="quantity" type="number" min={0} step={1} placeholder="0" value={form.quantity} onChange={(e) => set("quantity", e.target.value)} disabled={formDisabled}/></label>
         <label><span>Available</span><Input name="available" type="number" min={0} step={1} placeholder="0" value={form.available} onChange={(e) => set("available", e.target.value)} disabled={formDisabled}/></label>
         <label><span>Reserved</span><Input name="reserved" type="number" min={0} step={1} placeholder="0" value={form.reserved} onChange={(e) => set("reserved", e.target.value)} disabled={formDisabled}/></label>
@@ -127,6 +128,7 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         <label><span>Storage location</span><Select name="location_id" value={form.location_id} onChange={(e) => set("location_id", e.target.value)} disabled={formDisabled || !form.yard_id}><option value="">No location</option>{locations.map((l) => <option key={l.id} value={l.id}>Zone {l.zone} · Aisle {l.aisle}{l.bin ? ` · Bin ${l.bin}` : ""}</option>)}</Select></label>
         <label><span>Allocated ship</span><Select name="ship_id" value={form.ship_id} onChange={(e) => set("ship_id", e.target.value)} disabled={formDisabled || !form.yard_id}><option value="">Unassigned</option>{ships.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></label>
       </div>
+      {held > 0 && <div className="notice"><Icon name="warning"/>{held} {material!.unit} of this batch are on inspection hold. Available plus reserved cannot exceed the {material!.quantity - held} {material!.unit} not on hold; release or reject held stock on the Quality page.</div>}
       {(error || refsError) && <div className="notice" role="alert"><Icon name="warning"/>{error || refsError}</div>}
       <div className="dialog-actions">
         {editing && <Button type="button" variant="danger" onClick={remove} disabled={busy}>Delete</Button>}

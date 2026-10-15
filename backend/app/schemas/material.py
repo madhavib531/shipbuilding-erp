@@ -88,6 +88,7 @@ class MaterialRead(MaterialBase):
     """Schema for reading materials."""
     id: str
     version: int
+    held_quantity: int = Field(0, description="Part of the blocked quantity on inspection hold")
     created_at: datetime
     updated_at: datetime
     category: MaterialCategoryRead

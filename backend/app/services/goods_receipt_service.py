@@ -4,7 +4,8 @@ One transaction locks the purchase order, its lines and every destination batch 
 the order's expected version and status, validates every line against what is still outstanding, then
 writes the receipt, the stock increase, a RECEIPT ledger row per accepted line, the order-line
 quantities, the recalculated order status and an audit event together. A replayed Idempotency-Key
-returns the original receipt instead of adding stock again.
+returns the original receipt instead of adding stock again. A line marked hold_for_inspection puts its
+accepted quantity into a new batch on hold (on hand, not available) and opens an inspection hold.
 """
 
 import hashlib
@@ -22,6 +23,7 @@ from app.models.material import Material, MaterialStatusEnum
 from app.models.purchase_order import OPEN_PURCHASE_ORDER_STATUSES, PurchaseOrder
 from app.models.transaction import MaterialTransaction, TransactionType
 from app.schemas.goods_receipt import GoodsReceiptCreate
+from app.services import inspection_service as inspections
 from app.services import purchase_order_service as orders
 from app.services.transfer_service import _lock_materials
 
@@ -29,6 +31,7 @@ RECEIPT_OPTIONS = (
     selectinload(GoodsReceipt.yard),
     selectinload(GoodsReceipt.location),
     selectinload(GoodsReceipt.lines).selectinload(GoodsReceiptLine.purchase_order_line),
+    selectinload(GoodsReceipt.lines).selectinload(GoodsReceiptLine.inspection_hold),
 )
 
 
@@ -112,13 +115,18 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
             continue
         order_line = order_lines[line.purchase_order_line_id]
         batch = batches.get(line.destination_material_id)
+        if batch is not None and line.hold_for_inspection:
+            raise InvalidInputError(
+                f"Line {order_line.line_no}: goods held for inspection go into a new batch, and "
+                f"{batch.id} already exists. Give a new batch ID")
         if batch is None:
             if not line.batch:
                 raise InvalidInputError(
                     f"Line {order_line.line_no}: a batch number is required to create batch {line.destination_material_id}")
             batch = Material(
                 id=line.destination_material_id, name=order_line.description, category_id=order_line.category_id,
-                batch=line.batch, unit=order_line.unit, status=MaterialStatusEnum.HEALTHY,
+                batch=line.batch, unit=order_line.unit,
+                status=MaterialStatusEnum.INSPECTION if line.hold_for_inspection else MaterialStatusEnum.HEALTHY,
                 quantity=0, available=0, reserved=0, yard_id=data.yard_id, location_id=data.location_id, version=1,
             )
             db.add(batch)
@@ -140,7 +148,8 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
             if problems:
                 raise InvalidInputError(f"Batch {batch.id} cannot receive line {order_line.line_no}: " + "; ".join(problems))
         batch.quantity += line.accepted_quantity
-        batch.available += line.accepted_quantity
+        if not line.hold_for_inspection:  # held goods stay blocked until an inspection releases them
+            batch.available += line.accepted_quantity
         batch.version += 1
 
     receipt = GoodsReceipt(
@@ -151,15 +160,16 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
     db.add(receipt)
     try:
         db.flush()
-        accepted_total = rejected_total = 0
+        accepted_total = rejected_total = held_total = 0
         for line in data.lines:
             order_line = order_lines[line.purchase_order_line_id]
-            db.add(GoodsReceiptLine(
+            receipt_line = GoodsReceiptLine(
                 goods_receipt_id=receipt.id, purchase_order_line_id=order_line.id,
                 accepted_quantity=line.accepted_quantity, rejected_quantity=line.rejected_quantity,
                 rejection_reason=line.rejection_reason,
                 destination_material_id=line.destination_material_id if line.accepted_quantity else None,
-            ))
+            )
+            db.add(receipt_line)
             order_line.received_quantity += line.accepted_quantity
             order_line.rejected_quantity += line.rejected_quantity
             accepted_total += line.accepted_quantity
@@ -171,10 +181,16 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
                     to_location_id=data.location_id, reference_id=_label(receipt.id), actor=data.actor,
                     reason=f"{orders._label(order.id)} line {order_line.line_no}", status="Completed",
                 ))
+            if line.hold_for_inspection:
+                db.flush()
+                inspections.open_hold(db, batches[line.destination_material_id], receipt_line, _label(receipt.id),
+                                      line.accepted_quantity, data.actor)
+                held_total += line.accepted_quantity
         order.status = orders.recalculate_status(list(order_lines.values()))
         order.version += 1
         orders._event(db, order, "received", previous_status, data.actor, changes={
-            "receipt": _label(receipt.id), "accepted": accepted_total, "rejected": rejected_total})
+            "receipt": _label(receipt.id), "accepted": accepted_total, "rejected": rejected_total,
+            "held": held_total})
         db.commit()
     except IntegrityError:
         db.rollback()

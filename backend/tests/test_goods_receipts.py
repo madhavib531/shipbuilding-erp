@@ -85,7 +85,7 @@ class TestStockAndStatus:
         assert receipt["display_id"] == f"GR-{receipt['id']:05d}" and receipt["delivery_note"] == "DN-1"
         assert (order["status"], order["version"], order["lines"][0]["received_quantity"], order["lines"][0]["outstanding_quantity"]) == ("Received", 3, 10, 0)
         assert order["events"][-1]["action"] == "received"
-        assert order["events"][-1]["changes"] == {"receipt": receipt["display_id"], "accepted": 10, "rejected": 0}
+        assert order["events"][-1]["changes"] == {"receipt": receipt["display_id"], "accepted": 10, "rejected": 0, "held": 0}
         new = db.get(Material, "NEW-1")
         assert (new.quantity, new.available, new.reserved, new.status, new.batch, new.unit, new.category_id, new.yard_id, new.location_id, new.name) == \
             (10, 10, 0, MaterialStatusEnum.HEALTHY, "LOT-NEW", "sheets", "STEEL", "Y1", "L1", "AH36 plate 12mm")

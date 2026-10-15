@@ -38,6 +38,7 @@ _DETAIL_OPTIONS = _LIST_OPTIONS + (
     selectinload(PurchaseOrder.receipts).selectinload(GoodsReceipt.yard),
     selectinload(PurchaseOrder.receipts).selectinload(GoodsReceipt.location),
     selectinload(PurchaseOrder.receipts).selectinload(GoodsReceipt.lines).selectinload(GoodsReceiptLine.purchase_order_line),
+    selectinload(PurchaseOrder.receipts).selectinload(GoodsReceipt.lines).selectinload(GoodsReceiptLine.inspection_hold),
 )
 
 

@@ -60,3 +60,4 @@ class GoodsReceiptLine(Base, TimestampMixin):
     receipt = relationship("GoodsReceipt", back_populates="lines")
     purchase_order_line = relationship("PurchaseOrderLine")
     destination_material = relationship("Material")
+    inspection_hold = relationship("InspectionHold", back_populates="goods_receipt_line", uselist=False)
