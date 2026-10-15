@@ -1,4 +1,6 @@
 node_modules/
+# npm is the package manager; package-lock.json is the tracked lock file.
+pnpm-lock.yaml
 dist/
 build/
 .cache/

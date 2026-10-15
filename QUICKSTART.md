@@ -5,8 +5,8 @@
 ```powershell
 # Terminal 1: Frontend
 cd C:\ACD_cpb\frontend
-pnpm install
-pnpm run dev
+npm ci
+npm run dev
 # Available at http://localhost:8443
 ```
 
@@ -64,7 +64,7 @@ pytest tests/ -v
 
 # Format code
 cd frontend
-pnpm format
+npm run format
 
 # Check dependencies
 pip list
