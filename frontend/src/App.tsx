@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   alerts,
   audits,
@@ -6,7 +6,6 @@ import {
   materials,
   navItems,
   purchaseOrders,
-  transfers,
   type PageName,
 } from "./data/mockData";
 import {
@@ -19,12 +18,26 @@ import {
   Progress,
   Select,
   StatePanel,
+  Toast,
+  useToast,
   type IconName,
 } from "./components/ui";
 import { getReferenceData, listMaterials, type ApiMaterial, type ReferenceData } from "./api/materials";
+import { TRANSFER_STATUS_LABEL, getTransferSummary, listTransfers, type Transfer, type TransferStatus, type TransferSummary } from "./api/transfers";
 import { MaterialDialog } from "./components/MaterialDialog";
+import { TransferDialog } from "./components/TransferDialog";
+import { TransferActionDialog } from "./components/TransferActionDialog";
+import { CURRENT_USER } from "./currentUser";
 
 const INVENTORY_PAGE_SIZE = 25;
+
+const MOVEMENT_TABS: { label: string; statuses: TransferStatus[] }[] = [
+  { label: "All movements", statuses: [] },
+  { label: "Approvals", statuses: ["Requested"] },
+  { label: "Dispatch", statuses: ["Approved"] },
+  { label: "Receipt", statuses: ["Dispatched"] },
+  { label: "History", statuses: ["Received", "Rejected", "Cancelled"] },
+];
 
 const navIcons: Record<PageName, IconName> = {
   Dashboard: "dashboard",
@@ -41,6 +54,7 @@ const navIcons: Record<PageName, IconName> = {
 };
 
 const statusTone = (status: string) => {
+  if (status === "Rejected") return "danger" as const;
   if (["Healthy", "Received", "Confirmed", "Passed", "Active"].includes(status)) return "success" as const;
   if (["Low stock", "Overdue", "Approval needed", "Inspection", "Partial receipt"].includes(status)) return status === "Overdue" ? "danger" as const : "warning" as const;
   return "info" as const;
@@ -82,7 +96,7 @@ function Topbar({ onMenu, onNavigate }: { onMenu: () => void; onNavigate: (page:
       <div className="offline-pill"><Icon name="wifiOff" size={14}/><span>Offline-ready</span></div>
       <Select aria-label="Select yard" defaultValue="Harbor North"><option>Harbor North</option><option>East Basin</option><option>Dry Dock 4</option></Select>
       <button className="icon-button notification-button" aria-label="Notifications"><Icon name="bell"/><span/></button>
-      <button className="profile" onClick={() => onNavigate("Settings")}><span className="avatar">MC</span><span className="profile-copy"><strong>Maya Chen</strong><small>Materials Lead</small></span><Icon name="chevron" size={14}/></button>
+      <button className="profile" onClick={() => onNavigate("Settings")}><span className="avatar">{CURRENT_USER.initials}</span><span className="profile-copy"><strong>{CURRENT_USER.name}</strong><small>{CURRENT_USER.role}</small></span><Icon name="chevron" size={14}/></button>
     </div>
   </header>;
 }
@@ -141,8 +155,7 @@ function Inventory() {
   const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
   const [loadError, setLoadError] = useState("");
   const [dialog, setDialog] = useState<{ material?: ApiMaterial } | null>(null);
-  const [toast, setToast] = useState("");
-  const toastTimer = useRef<number | undefined>(undefined);
+  const [toast, act] = useToast();
   const [items, setItems] = useState<ApiMaterial[]>([]);
   const [total, setTotal] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -179,11 +192,6 @@ function Inventory() {
     return () => controller.abort();
   }, [skip, search, category, yard, reloadKey]);
 
-  const act = (message: string) => {
-    window.clearTimeout(toastTimer.current);
-    setToast(message);
-    toastTimer.current = window.setTimeout(() => setToast(""), 2800);
-  };
   const afterSave = (message: string) => { setDialog(null); act(message); setReloadKey((k) => k + 1); };
   const firstShown = total === 0 ? 0 : skip + 1;
   return <>
@@ -198,15 +206,87 @@ function Inventory() {
       <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} materials` : `${total} materials`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - INVENTORY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + INVENTORY_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     {dialog && <MaterialDialog material={dialog.material} refs={refs} refsError={refsError} onClose={() => setDialog(null)} onDone={afterSave}/>}
-    {toast && <div className="toast"><Icon name="check"/>{toast}</div>}
+    <Toast message={toast}/>
   </>;
 }
 
+const MOVEMENT_ACTION: Partial<Record<TransferStatus, string>> = { Requested: "Review", Approved: "Dispatch", Dispatched: "Receive" };
+
+const formatMoment = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
 function Movements() {
-  const [tab, setTab] = useState("All movements");
-  return <><PageHeader eyebrow="Material logistics" title="Movements" description="Approve, dispatch and receive transfers between yards." actions={<Button icon="plus">Create transfer</Button>}/>
-    <div className="mini-kpis">{[["Awaiting approval","5","warning"],["In transit","8","info"],["Due today","3","purple"],["Received this week","42","success"]].map(([label,value,tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={tone as "warning"}>Live queue</Badge></Card>)}</div>
-    <Card className="table-card"><div className="tabs">{["All movements","Approvals","Dispatch","Receipt","History"].map(item => <button className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{item}</button>)}</div><div className="movement-list">{transfers.filter(t => tab === "All movements" || tab === "History" || t.status.toLowerCase().includes(tab.slice(0,-1).toLowerCase())).map(t => <div className="movement-row" key={t.id}><span className="movement-icon"><Icon name="movement"/></span><div className="movement-main"><span><strong>{t.item}</strong><Badge tone={statusTone(t.status)}>{t.status}</Badge></span><p>{t.route}</p></div><div><strong>{t.qty}</strong><small>{t.id}</small></div><div><strong>{t.date}</strong><small>Updated by Operations</small></div><Button variant={t.status === "Approval needed" ? "primary" : "secondary"}>{t.status === "Approval needed" ? "Review" : "Details"}</Button></div>)}</div></Card>
+  const [tab, setTab] = useState(MOVEMENT_TABS[0]);
+  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [items, setItems] = useState<Transfer[]>([]);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState<TransferSummary | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [refs, setRefs] = useState<ReferenceData | null>(null);
+  const [refsError, setRefsError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [toast, showToast] = useToast();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getReferenceData(controller.signal)
+      .then(setRefs)
+      .catch((err) => { if (!controller.signal.aborted) setRefsError(`Yards and locations could not be loaded: ${err.message}`); });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState("loading");
+    getTransferSummary(controller.signal).then(setSummary).catch(() => { if (!controller.signal.aborted) setSummary(null); });
+    listTransfers(tab.statuses, controller.signal)
+      .then(({ transfers, total: count }) => {
+        setItems(transfers);
+        setTotal(count);
+        setState(transfers.length === 0 ? "empty" : "ready");
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setState("error");
+      });
+    return () => controller.abort();
+  }, [tab, reloadKey]);
+
+  const done = useCallback((message: string) => {
+    setCreating(false);
+    setOpenId(null);
+    showToast(message);
+    setReloadKey((k) => k + 1);
+  }, [showToast]);
+
+  const kpi = (value: number | undefined) => (summary ? String(value) : "—");
+  const cards: [string, string, "warning" | "info" | "purple" | "success"][] = [
+    ["Awaiting approval", kpi(summary?.awaiting_approval), "warning"],
+    ["In transit", kpi(summary?.in_transit), "info"],
+    ["Due today", kpi(summary?.due_today), "purple"],
+    ["Received this week", kpi(summary?.received_this_week), "success"],
+  ];
+
+  return <><PageHeader eyebrow="Material logistics" title="Movements" description="Approve, dispatch and receive transfers between yards." actions={<Button icon="plus" onClick={() => setCreating(true)}>Create transfer</Button>}/>
+    <div className="mini-kpis">{cards.map(([label, value, tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={tone}>Live queue</Badge></Card>)}</div>
+    <Card className="table-card"><div className="tabs">{MOVEMENT_TABS.map(item => <button className={tab.label === item.label ? "active" : ""} onClick={() => setTab(item)} key={item.label}>{item.label}</button>)}</div>
+      {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
+      {state !== "ready"
+        ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)} title={state === "loading" ? "Loading transfers" : state === "empty" ? "No transfers here" : "Transfers couldn’t be loaded"} message={state === "loading" ? "Fetching the movement queue…" : state === "empty" ? "Use Create transfer to move available stock between yards or locations." : undefined}/>
+        : <div className="movement-list">{items.map(t => {
+          const label = TRANSFER_STATUS_LABEL[t.status];
+          const last = t.events[t.events.length - 1];
+          const action = MOVEMENT_ACTION[t.status];
+          return <div className="movement-row" key={t.id}><span className="movement-icon"><Icon name="movement"/></span><div className="movement-main"><span><strong>{t.material.name}</strong><Badge tone={statusTone(label)}>{label}</Badge></span><p>{t.from_yard.name}{t.from_location ? ` (Zone ${t.from_location.zone})` : ""} → {t.to_yard.name}{t.to_location ? ` (Zone ${t.to_location.zone})` : ""}</p></div><div><strong>{t.quantity} {t.unit}</strong><small>{t.display_id}</small></div><div><strong>{last ? formatMoment(last.created_at) : formatMoment(t.updated_at)}</strong><small>Updated by {last?.actor ?? t.requested_by}</small></div><Button variant={t.status === "Requested" ? "primary" : "secondary"} onClick={() => setOpenId(t.id)}>{action ?? "Details"}</Button></div>;
+        })}</div>}
+      {state === "ready" && total > items.length && <div className="table-footer"><span>Showing the {items.length} most recently updated of {total} transfers</span></div>}
+    </Card>
+    {creating && <TransferDialog refs={refs} refsError={refsError} onClose={() => setCreating(false)} onDone={done}/>}
+    {openId !== null && <TransferActionDialog transferId={openId} tone={statusTone} onClose={() => setOpenId(null)} onDone={done}/>}
+    <Toast message={toast}/>
   </>;
 }
 

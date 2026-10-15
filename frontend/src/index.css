@@ -181,7 +181,7 @@ td small { color:#8691a3; margin-top:4px; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .dialog-layer { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:20px; }
 .dialog-scrim,.sidebar-scrim { position:absolute; inset:0; border:0; background:rgba(5,13,29,.55); }
-.dialog { width:min(620px,100%); position:relative; z-index:1; background:white; border-radius:13px; box-shadow:0 25px 70px rgba(5,14,32,.28); }
+.dialog { width:min(620px,100%); max-height:calc(100vh - 40px); overflow-y:auto; position:relative; z-index:1; background:white; border-radius:13px; box-shadow:0 25px 70px rgba(5,14,32,.28); }
 .dialog-header { padding:20px 22px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; }
 .dialog-header h2 { font-size:18px; }.dialog-header p:last-child { color:var(--muted);font-size:11px;margin:0;}
 .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:20px 22px; }

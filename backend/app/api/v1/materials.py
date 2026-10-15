@@ -8,6 +8,7 @@ from app.models.material import Material, MaterialCategory, MaterialStatusEnum
 from app.models.facility import Yard, StorageLocation
 from app.models.program import Ship
 from app.models.transaction import MaterialTransaction
+from app.models.transfer import MaterialTransfer
 from app.schemas.common import SuccessResponse
 from app.schemas.material import MaterialCreate, MaterialUpdate, MaterialRead
 
@@ -203,8 +204,13 @@ def update_material(
     - Storage location constraints (if updating)
     - Ship constraints (if updating)
     - Quantity consistency
+    - expected_version, if sent, still matches (stale-edit protection)
     """
-    material = db.query(Material).filter(Material.id == material_id).first()
+    # Lock the row so the checks below and the write cannot interleave with a transfer dispatch or receipt.
+    material = (
+        db.query(Material).filter(Material.id == material_id)
+        .with_for_update().populate_existing().first()
+    )
 
     if not material:
         raise HTTPException(
@@ -213,6 +219,13 @@ def update_material(
         )
 
     update_data = material_update.model_dump(exclude_unset=True)
+    expected_version = update_data.pop("expected_version", None)
+    if expected_version is not None and expected_version != material.version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Material '{material_id}' was changed by another update (now version "
+                   f"{material.version}, you edited version {expected_version}). Reload and try again."
+        )
 
     # Verify category if updating
     if "category_id" in update_data:
@@ -280,6 +293,8 @@ def update_material(
     try:
         for field, value in update_data.items():
             setattr(material, field, value)
+        if update_data:
+            material.version += 1
         db.commit()
         db.refresh(material)
     except IntegrityError:
@@ -308,12 +323,25 @@ def delete_material(
     Note: Will fail if material has associated transactions.
     This is by design to protect referential integrity.
     """
-    material = db.query(Material).filter(Material.id == material_id).first()
+    material = (
+        db.query(Material).filter(Material.id == material_id)
+        .with_for_update().populate_existing().first()
+    )
 
     if not material:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Material with ID '{material_id}' not found"
+        )
+
+    transfer_count = db.query(MaterialTransfer).filter(
+        (MaterialTransfer.material_id == material_id)
+        | (MaterialTransfer.destination_material_id == material_id)
+    ).count()
+    if transfer_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete material with {transfer_count} transfer(s) referencing it."
         )
 
     # Check for associated transactions

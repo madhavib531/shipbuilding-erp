@@ -1,6 +1,6 @@
 """Material and MaterialCategory models."""
 
-from sqlalchemy import Column, String, Integer, Float, ForeignKey, Enum
+from sqlalchemy import CheckConstraint, Column, String, Integer, Float, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from enum import Enum as PyEnum
 from app.models.base import Base, TimestampMixin
@@ -29,8 +29,19 @@ class MaterialCategory(Base, TimestampMixin):
 
 
 class Material(Base, TimestampMixin):
-    """Inventory material item."""
+    """A batch of material held at one yard.
+
+    quantity is on hand at the yard; available is free to issue or transfer; reserved is held
+    for a ship; quantity - available - reserved is blocked (e.g. inspection or quarantine).
+    Stock in transit is not counted here; it lives on dispatched MaterialTransfer rows.
+    """
     __tablename__ = "materials"
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_materials_quantity_nonnegative"),
+        CheckConstraint("available >= 0", name="ck_materials_available_nonnegative"),
+        CheckConstraint("reserved >= 0", name="ck_materials_reserved_nonnegative"),
+        CheckConstraint("available + reserved <= quantity", name="ck_materials_allocation_within_quantity"),
+    )
 
     id = Column(String(50), primary_key=True)
     name = Column(String(200), nullable=False)
@@ -44,6 +55,8 @@ class Material(Base, TimestampMixin):
     location_id = Column(String(50), ForeignKey("storage_locations.id"))
     ship_id = Column(String(50), ForeignKey("ships.id"))
     status = Column(Enum(MaterialStatusEnum), default=MaterialStatusEnum.HEALTHY, nullable=False)
+    # Incremented on every stock or attribute change; clients send it back to detect stale edits.
+    version = Column(Integer, default=1, server_default="1", nullable=False)
 
     category = relationship("MaterialCategory", back_populates="materials")
     yard = relationship("Yard", back_populates="materials")

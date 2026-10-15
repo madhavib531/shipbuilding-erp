@@ -70,11 +70,14 @@ class MaterialUpdate(BaseModel):
     location_id: Optional[str] = Field(None, max_length=50)
     ship_id: Optional[str] = Field(None, max_length=50)
     status: Optional[MaterialStatusEnum] = None
+    expected_version: Optional[int] = Field(
+        None, ge=1, description="The version the client last read; the update is refused with 409 if it changed"
+    )
 
     # Cross-field quantity rules need the stored values, so the endpoint checks them after merging.
     @model_validator(mode="after")
     def reject_null_for_required_fields(self):
-        nullable = {"location_id", "ship_id"}
+        nullable = {"location_id", "ship_id", "expected_version"}
         nulled = sorted(f for f in self.model_fields_set - nullable if getattr(self, f) is None)
         if nulled:
             raise ValueError(f"These fields cannot be null: {', '.join(nulled)}")
@@ -84,6 +87,7 @@ class MaterialUpdate(BaseModel):
 class MaterialRead(MaterialBase):
     """Schema for reading materials."""
     id: str
+    version: int
     created_at: datetime
     updated_at: datetime
     category: MaterialCategoryRead

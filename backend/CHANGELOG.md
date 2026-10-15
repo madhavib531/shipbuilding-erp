@@ -1,5 +1,27 @@
 # Changelog — Dockyard Materials Command Backend
 
+## [Unreleased] — Module 3: Material Movements and Yard Transfers
+
+### Added
+- Transfer lifecycle API under `/api/v1/transfers`: request, approve, reject, cancel, dispatch, receive,
+  list with status filters, summary counts, and detail with audit history.
+- `material_transfers` and `material_transfer_events` tables (migration `cab3875a1603`).
+- `TRANSFER_OUT` / `TRANSFER_IN` ledger types; dispatch and receipt write ledger rows, and receipt
+  shortages are recorded as `ADJUSTMENT` rows with the discrepancy reason.
+- Idempotent transfer creation via the `Idempotency-Key` header.
+- `materials.version` and `expected_version` on `PATCH /api/v1/materials/{id}` for stale-edit protection.
+- CHECK constraints on materials: non-negative stock and `available + reserved <= quantity`.
+- Transfer tests (SQLite) and opt-in PostgreSQL concurrency tests (`TEST_DATABASE_URL`).
+
+### Changed
+- Material updates and deletes lock the row; deletes are refused while transfers reference the material.
+- The SQLite fallback uses a connection pool for file databases (a single shared connection is now
+  used only for in-memory SQLite), fixing corrupted reads and crashes under concurrent requests.
+
+### Known limitations
+- No authentication: `actor` is supplied by the client (the frontend sends the top-bar profile name).
+- Downgrading `cab3875a1603` leaves the two new enum values in PostgreSQL's `transactiontype` type.
+
 ## [1.0.0] — 2026-10-10 (Module 1: Backend Foundation)
 
 ### Added

@@ -16,6 +16,7 @@ export type ApiMaterial = {
   location_id: string | null;
   ship_id: string | null;
   status: MaterialStatus;
+  version: number;
   created_at: string;
   updated_at: string;
   category: { id: string; name: string };
@@ -66,8 +67,9 @@ export async function createMaterial(input: MaterialInput & { id: string }) {
   return (await apiRequest<Envelope<ApiMaterial>>("/api/v1/materials", { method: "POST", body: JSON.stringify(input) })).data;
 }
 
-export async function updateMaterial(id: string, changes: Partial<MaterialInput>) {
-  return (await apiRequest<Envelope<ApiMaterial>>(`/api/v1/materials/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(changes) })).data;
+export async function updateMaterial(id: string, changes: Partial<MaterialInput>, expectedVersion: number) {
+  const body = { ...changes, expected_version: expectedVersion };
+  return (await apiRequest<Envelope<ApiMaterial>>(`/api/v1/materials/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })).data;
 }
 
 export async function deleteMaterial(id: string) {

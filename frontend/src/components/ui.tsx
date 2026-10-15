@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
 
 export type IconName =
@@ -68,8 +69,24 @@ export function Progress({ value }: { value: number }) {
   return <div className="progress" aria-label={`${value}% complete`}><span style={{ width: `${value}%` }}/></div>;
 }
 
-export function StatePanel({ type, onRetry }: { type: "loading" | "empty" | "error"; onRetry?: () => void }) {
-  if (type === "loading") return <div className="state-panel"><div className="spinner"/><strong>Loading material records</strong><span>Synchronizing with the local data cache…</span></div>;
-  if (type === "error") return <div className="state-panel"><span className="state-icon error"><Icon name="warning"/></span><strong>Records couldn’t be loaded</strong><span>The connection was interrupted. Your local changes are safe.</span><Button variant="secondary" onClick={onRetry}>Try again</Button></div>;
-  return <div className="state-panel"><span className="state-icon"><Icon name="box"/></span><strong>No materials found</strong><span>Try adjusting your search or filters.</span></div>;
+export function StatePanel({ type, onRetry, title, message }: { type: "loading" | "empty" | "error"; onRetry?: () => void; title?: string; message?: string }) {
+  if (type === "loading") return <div className="state-panel"><div className="spinner"/><strong>{title ?? "Loading material records"}</strong><span>{message ?? "Synchronizing with the local data cache…"}</span></div>;
+  if (type === "error") return <div className="state-panel"><span className="state-icon error"><Icon name="warning"/></span><strong>{title ?? "Records couldn’t be loaded"}</strong><span>{message ?? "The connection was interrupted. Your local changes are safe."}</span><Button variant="secondary" onClick={onRetry}>Try again</Button></div>;
+  return <div className="state-panel"><span className="state-icon"><Icon name="box"/></span><strong>{title ?? "No materials found"}</strong><span>{message ?? "Try adjusting your search or filters."}</span></div>;
+}
+
+export function useToast(): [string, (message: string) => void] {
+  const [toast, setToast] = useState("");
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const show = useCallback((message: string) => {
+    window.clearTimeout(timer.current);
+    setToast(message);
+    timer.current = window.setTimeout(() => setToast(""), 2800);
+  }, []);
+  return [toast, show];
+}
+
+export function Toast({ message }: { message: string }) {
+  return message ? <div className="toast" role="status"><Icon name="check"/>{message}</div> : null;
 }

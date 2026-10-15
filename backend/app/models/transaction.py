@@ -11,6 +11,8 @@ class TransactionType(str, PyEnum):
     RECEIPT = "Receipt"
     ISSUANCE = "Issuance"
     TRANSFER = "Transfer"
+    TRANSFER_OUT = "Transfer out"
+    TRANSFER_IN = "Transfer in"
     ADJUSTMENT = "Adjustment"
     RETURN = "Return"
     SCRAP = "Scrap"

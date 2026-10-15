@@ -112,14 +112,16 @@ pytest tests/test_models.py -v
 pytest --cov=app tests/
 ```
 
-### Expected test results:
-- `test_root_endpoint` — ✓ Pass
-- `test_health_check` — ✓ Pass
-- `test_openapi_docs` — ✓ Pass
-- `test_materials_list_endpoint` — ✓ Pass
-- `test_*_creation` (models) — ✓ Pass (8 model tests)
+### Test databases
+The suite runs on temporary SQLite files and never touches the database in `DATABASE_URL`.
 
-**Total:** 12 tests, all passing
+`tests/test_transfers_concurrency_pg.py` checks row locking on real PostgreSQL and is skipped unless
+`TEST_DATABASE_URL` is set. Point it at a **separate** database (it refuses to run against the
+`DATABASE_URL` database); each test creates and drops its own throwaway schema:
+```powershell
+$env:TEST_DATABASE_URL = "postgresql+psycopg://USER:PASSWORD@localhost:5432/dockyard_inventory_test"
+pytest tests/test_transfers_concurrency_pg.py -v
+```
 
 ## Project Structure
 
@@ -271,8 +273,17 @@ Material ←→ MaterialTransaction
 - `GET /api/v1/materials` — List, newest first. Query: `skip`, `limit` (≤1000), `search` (ID/name/batch), `category`, `yard`, `status_filter`
 - `GET /api/v1/materials/{id}` — Material detail (404 if missing)
 - `POST /api/v1/materials` — Create (201; 409 duplicate ID; 422 unknown category/yard/location/ship, location or ship in another yard, or available + reserved > quantity)
-- `PATCH /api/v1/materials/{id}` — Partial update; quantities and yard/location/ship consistency are checked against the merged result; `null` is only allowed for `location_id` and `ship_id`
-- `DELETE /api/v1/materials/{id}` — Delete (409 if the material has transactions)
+- `PATCH /api/v1/materials/{id}` — Partial update; quantities and yard/location/ship consistency are checked against the merged result; `null` is only allowed for `location_id` and `ship_id`. Send `expected_version` (from the last read) to get 409 instead of overwriting a newer change
+- `DELETE /api/v1/materials/{id}` — Delete (409 if the material has transactions or transfers)
+
+Each material row is one batch at one yard. Quantity meanings:
+- `quantity` — on hand at the yard
+- `available` — free to issue or transfer
+- `reserved` — held for a ship
+- `quantity − available − reserved` — blocked (e.g. inspection or quarantine)
+
+The database enforces `quantity, available, reserved ≥ 0` and `available + reserved ≤ quantity`.
+Stock in transit is not counted in any material row; it is held on dispatched transfers.
 
 ### Reference data
 - `GET /api/v1/reference-data` — Categories, yards, storage locations and ships for forms and filters (read-only)
@@ -281,6 +292,51 @@ To load development reference data (insert-only, idempotent, creates no material
 ```powershell
 python -m scripts.seed_reference_data
 ```
+
+### Transfers (material movements)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/transfers` | Newest first. Query: `status` (repeatable), `material_id`, `yard`, `skip`, `limit` (≤200) |
+| GET | `/api/v1/transfers/summary` | Counts: awaiting approval, ready to dispatch, in transit, due today, received in the last 7 days |
+| GET | `/api/v1/transfers/{id}` | Includes the full audit history (`events`) |
+| POST | `/api/v1/transfers` | Request a transfer. Optional `Idempotency-Key` header: replaying the same key and body returns the original (200); the same key with a different body is 409 |
+| POST | `/api/v1/transfers/{id}/approve` | `{actor, reason?}` |
+| POST | `/api/v1/transfers/{id}/reject` | `{actor, reason}` — reason required |
+| POST | `/api/v1/transfers/{id}/cancel` | `{actor, reason}` — reason required; only before dispatch |
+| POST | `/api/v1/transfers/{id}/dispatch` | `{actor, reason?}` — deducts stock from the source batch |
+| POST | `/api/v1/transfers/{id}/receive` | `{actor, received_quantity?, destination_material_id?, discrepancy_reason?}` |
+
+**Lifecycle:** `Requested → Approved → Dispatched → Received`. `Requested` can be rejected or
+cancelled, `Approved` can be cancelled. `Received`, `Rejected` and `Cancelled` are final. Any other
+transition returns 409 and changes nothing.
+
+**Stock movement:**
+- Requesting and approving do not move stock. A request may not exceed `available` at that moment.
+- **Dispatch** re-checks that the source batch is still at the recorded yard/location and has enough
+  `available`, then deducts `quantity` and `available` from it. The stock is now in transit on the transfer.
+- **Receive** adds the received quantity to a destination batch:
+  - omit `destination_material_id` to relocate the source batch itself (keeping its ID) — allowed only
+    when this transfer took the whole batch at dispatch and nothing has been added to it since;
+  - otherwise give an existing batch at the destination yard (and location, if the transfer has one)
+    with the same category, batch and unit, or a new ID to create one.
+- Receiving less than was dispatched requires `discrepancy_reason`; the missing quantity is written to
+  the ledger as an `Adjustment` against the source batch. Receiving more is rejected.
+
+**Ledger and audit:** dispatch writes a `TRANSFER_OUT` transaction and receipt a `TRANSFER_IN`
+(both with `reference_id` = `TR-#####`). Every lifecycle action is recorded in
+`material_transfer_events` with actor, timestamp, reason and quantity.
+
+**Concurrency:** each action locks the transfer row and then the affected material rows
+(`SELECT … FOR UPDATE`, in a fixed order), and stock, status, ledger and audit rows commit together
+or not at all. A second concurrent dispatch or receipt of the same transfer gets 409, and competing
+dispatches from one batch cannot take more than is available. Material edits lock the same row.
+
+**Prototype limitation — no authentication:** `actor` is supplied by the client. The frontend sends
+the name shown in the top bar, so the audit trail is only as trustworthy as the client.
+
+**Migration `cab3875a1603` downgrade limitation:** PostgreSQL cannot remove enum values, so
+`TRANSFER_OUT` and `TRANSFER_IN` remain in the `transactiontype` enum after a downgrade (unused and
+harmless). Downgrading drops all transfer data.
 
 ## CORS Configuration
 

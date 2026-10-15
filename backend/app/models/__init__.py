@@ -6,6 +6,7 @@ from app.models.facility import Yard, StorageLocation
 from app.models.program import Ship, ShipSeries
 from app.models.supplier import Supplier
 from app.models.transaction import MaterialTransaction, TransactionType
+from app.models.transfer import MaterialTransfer, MaterialTransferEvent, TransferStatus
 
 __all__ = [
     "Base",
@@ -18,4 +19,7 @@ __all__ = [
     "Supplier",
     "MaterialTransaction",
     "TransactionType",
+    "MaterialTransfer",
+    "MaterialTransferEvent",
+    "TransferStatus",
 ]

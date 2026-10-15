@@ -9,7 +9,10 @@ _engine_kwargs: dict = {"echo": settings.debug}
 
 if settings.database_url.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
-    _engine_kwargs["poolclass"] = StaticPool
+    # One shared connection is only safe for in-memory databases; file databases need a real pool
+    # or concurrent requests corrupt each other's cursors.
+    if ":memory:" in settings.database_url or settings.database_url.rstrip("/") == "sqlite:":
+        _engine_kwargs["poolclass"] = StaticPool
 else:
     _engine_kwargs["pool_pre_ping"] = True
 

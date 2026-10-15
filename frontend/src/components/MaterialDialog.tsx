@@ -73,7 +73,7 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         const original = toInput(fromMaterial(material)) as MaterialInput;
         const changes = Object.fromEntries(Object.entries(input).filter(([k, v]) => original[k as keyof MaterialInput] !== v));
         if (Object.keys(changes).length === 0) return onClose();
-        await updateMaterial(material.id, changes);
+        await updateMaterial(material.id, changes, material.version);
         onDone(`Material ${material.id} updated`);
       } else {
         const created = await createMaterial({ id: form.id.trim(), ...input });
