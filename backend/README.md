@@ -288,10 +288,22 @@ Stock in transit is not counted in any material row; it is held on dispatched tr
 ### Reference data
 - `GET /api/v1/reference-data` — Categories, yards, storage locations and ships for forms and filters (read-only)
 
-To load development reference data (insert-only, idempotent, creates no materials):
+To load development reference data — categories, yards, locations, ships and suppliers (insert-only, idempotent, creates no materials):
 ```powershell
 python -m scripts.seed_reference_data
 ```
+
+### Suppliers
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/suppliers` | Sorted by name. Query: `search` (ID, name, contact person, country), `status` (repeatable), `country` (exact, case-insensitive), `skip`, `limit` (≤200) |
+| GET | `/api/v1/suppliers/{id}` | 404 if missing |
+| POST | `/api/v1/suppliers` | 201. `id` and `name` required; status defaults to `Approved`. 409 for a duplicate ID or a name already used (case-insensitive) |
+| PATCH | `/api/v1/suppliers/{id}` | Partial update; `null` or `""` clears optional fields, `name` and `status` cannot be null; the ID cannot change |
+
+Statuses: `Approved`, `Conditional`, `Probation`, `Inactive`, `Blocked`. Suppliers are never deleted — set
+`Inactive` or `Blocked` instead so purchase-order history stays intact. Text fields are trimmed and length-checked;
+`contact_email` must look like an address. Supplier changes never affect stock or the ledger.
 
 ### Transfers (material movements)
 | Method | Path | Notes |

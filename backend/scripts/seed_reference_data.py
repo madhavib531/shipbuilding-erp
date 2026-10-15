@@ -1,4 +1,4 @@
-"""Development-only seed for material reference data (categories, yards, locations, ships).
+"""Development-only seed for reference data (categories, yards, locations, ships, suppliers).
 
 Run manually from the backend folder:  python -m scripts.seed_reference_data
 Inserts rows whose IDs are missing. Never updates or deletes existing rows, and creates no materials.
@@ -8,6 +8,7 @@ from app.database import SessionLocal
 from app.models.material import MaterialCategory
 from app.models.facility import Yard, StorageLocation
 from app.models.program import Ship, ShipSeries, ShipBuildStatusEnum
+from app.models.supplier import Supplier, SupplierStatusEnum
 
 CATEGORIES = [
     ("STRUCTURAL-STEEL", "Structural steel"),
@@ -43,6 +44,13 @@ SHIPS = [
     ("OSV-MERIDIAN", "OSV Meridian", "OFFSHORE-SUPPORT", "DRY-DOCK-4", ShipBuildStatusEnum.SYSTEMS_INTEGRATION),
 ]
 
+SUPPLIERS = [
+    ("NORDIC-MARINE-STEEL", "Nordic Marine Steel"),
+    ("BLUELINE-COMPONENTS", "BlueLine Components"),
+    ("KEYSTONE-ELECTRICAL", "Keystone Electrical"),
+    ("OCEANSHIELD-COATINGS", "OceanShield Coatings"),
+]
+
 
 def _add_missing(db, model, rows, build):
     existing = {row_id for (row_id,) in db.query(model.id)}
@@ -62,6 +70,8 @@ def main():
         _add_missing(db, ShipSeries, SERIES, lambda i, n, spec: ShipSeries(id=i, name=n, design_spec=spec))
         _add_missing(db, Ship, SHIPS,
                      lambda i, n, s, y, st: Ship(id=i, name=n, series_id=s, yard_id=y, build_status=st, allocated_value=0.0))
+        _add_missing(db, Supplier, SUPPLIERS,
+                     lambda i, n: Supplier(id=i, name=n, status=SupplierStatusEnum.APPROVED))
         db.commit()
     except Exception:
         db.rollback()

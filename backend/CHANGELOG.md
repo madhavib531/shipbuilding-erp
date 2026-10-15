@@ -1,5 +1,14 @@
 # Changelog — Dockyard Materials Command Backend
 
+## [Unreleased] — Procurement M1: Supplier API
+
+### Added
+- Supplier directory API under `/api/v1/suppliers`: list (search, status and country filters, pagination),
+  detail, create and partial update. Names are unique case-insensitively; suppliers are deactivated via
+  status instead of being deleted. No schema change (the `suppliers` table already existed).
+- Development seed now inserts four Approved suppliers.
+- Supplier API tests, including a check that supplier changes never touch stock or the ledger.
+
 ## [Unreleased] — Module 3: Material Movements and Yard Transfers
 
 ### Added
