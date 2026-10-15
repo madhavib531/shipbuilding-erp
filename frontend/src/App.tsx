@@ -213,7 +213,7 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
   </>;
 }
 
-function Inventory() {
+function Inventory({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
@@ -259,7 +259,7 @@ function Inventory() {
     return () => controller.abort();
   }, [skip, search, category, yard, reloadKey]);
 
-  const afterSave = (message: string) => { setDialog(null); act(message); setReloadKey((k) => k + 1); };
+  const afterSave = (message: string) => { setDialog(null); act(message); setReloadKey((k) => k + 1); onMaterialsChanged(); };
   const firstShown = total === 0 ? 0 : skip + 1;
   return <>
     <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" disabled title="Export is not available yet">Export</Button><Button icon="plus" onClick={() => setDialog({})}>Add material</Button></>}/>
@@ -414,10 +414,10 @@ function Settings() {
   return <><PageHeader eyebrow="Workspace administration" title="Settings" description="Manage organization preferences, roles and integrations."/><div className="settings-layout"><Card className="settings-nav">{["General","Roles & access","Notifications","Integrations","Offline sync"].map(t => <button className={tab===t?"active":""} onClick={() => setTab(t)} key={t}><Icon name={t==="Roles & access"?"users":t==="Offline sync"?"wifiOff":"settings"}/>{t}</button>)}</Card><Card className="settings-panel"><h2>{tab}</h2><p>Configure {tab.toLowerCase()} preferences for the materials workspace.</p>{tab === "Roles & access" ? <div className="role-list">{[["Materials Admin","8 members","Full inventory and approval access"],["Yard Manager","14 members","Yard-scoped receiving and transfers"],["Quality Inspector","6 members","Inspection and certificate workflows"],["Viewer","22 members","Read-only operational access"]].map(r => <div key={r[0]}><span className="role-icon"><Icon name="users"/></span><span><strong>{r[0]}</strong><small>{r[2]}</small></span><Badge>{r[1]}</Badge><Button variant="ghost">Edit</Button></div>)}</div> : <div className="settings-form"><label><span>Organization name</span><Input defaultValue="Northstar Marine Works"/></label><label><span>Default yard</span><Select><option>Harbor North</option><option>East Basin</option></Select></label><label><span>Inventory valuation</span><Select><option>Weighted average cost</option><option>FIFO</option></Select></label><label className="toggle-row"><span><strong>Require transfer approval</strong><small>Transfers over $5,000 require a yard manager.</small></span><input type="checkbox" defaultChecked/></label><div className="notice"><Icon name="warning"/>Settings are displayed for demonstration and are not persisted.</div><Button>Save changes</Button></div>}</Card></div></>;
 }
 
-function CurrentPage({ page, onNavigate, materials }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState }) {
+function CurrentPage({ page, onNavigate, materials, onMaterialsChanged }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState; onMaterialsChanged: () => void }) {
   switch (page) {
     case "Dashboard": return <Dashboard onNavigate={onNavigate} materials={materials}/>;
-    case "Inventory": return <Inventory/>;
+    case "Inventory": return <Inventory onMaterialsChanged={onMaterialsChanged}/>;
     case "Movements": return <Movements/>;
     case "QR Tracking": return <QRTracking/>;
     case "Ships & Yards": return <ShipsYards/>;
@@ -434,15 +434,17 @@ export default function App() {
   const [page, setPage] = useState<PageName>("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [materials, setMaterials] = useState<MaterialSummaryState>({ data: null, error: "" });
+  const [materialsVersion, setMaterialsVersion] = useState(0);
+  const onMaterialsChanged = useCallback(() => setMaterialsVersion((v) => v + 1), []);
 
-  // One summary feeds the Dashboard cards and the sidebar badge; refreshed on navigation so edits made elsewhere show up.
+  // One summary feeds the Dashboard cards and the sidebar badge; refreshed on navigation and after Inventory changes.
   useEffect(() => {
     const controller = new AbortController();
     getMaterialSummary(controller.signal)
       .then((data) => setMaterials({ data, error: "" }))
       .catch((err) => { if (!controller.signal.aborted) setMaterials({ data: null, error: err instanceof Error ? err.message : String(err) }); });
     return () => controller.abort();
-  }, [page]);
+  }, [page, materialsVersion]);
 
-  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials}/></main></div></div>;
+  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged}/></main></div></div>;
 }

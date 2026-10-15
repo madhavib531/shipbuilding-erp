@@ -433,3 +433,84 @@ class TestPendingSummary:
         assert (s["overdue"], s["due_today"], s["pending"]) == (1, 1, 4)
         act(client, late, "receive", destination_material_id="M1-Y2")
         assert summary(client)["overdue"] == 0
+
+    def test_pending_and_overdue_match_the_transfer_list(self, client, world):
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+        def parity():
+            s = summary(client)
+            open_total = client.get("/api/v1/transfers", params=[("status", "Requested"), ("status", "Approved"),
+                                                                 ("status", "Dispatched"), ("limit", 200)]).json()["data"]
+            listed_overdue = sum(
+                1 for t in open_total["transfers"]
+                if t["status"] == "Dispatched" and t["expected_arrival"] and t["expected_arrival"] < date.today().isoformat()
+            )
+            return (s["pending"], s["overdue"]), (open_total["total"], listed_overdue)
+
+        assert parity() == ((0, 0), (0, 0))
+        create(client, quantity=1)
+        a = approved(client, quantity=1, expected_arrival=yesterday)
+        late = dispatched(client, quantity=1, expected_arrival=yesterday)
+        dispatched(client, quantity=1)
+        act(client, create(client, quantity=1).json()["data"]["id"], "reject", reason="no")
+        summary_side, list_side = parity()
+        assert summary_side == list_side == (4, 1)
+        act(client, a, "cancel", reason="no")
+        act(client, late, "receive", destination_material_id="M1-Y2")
+        summary_side, list_side = parity()
+        assert summary_side == list_side == (2, 0)
+
+
+def set_status(client, material_id, status):
+    v = client.get(f"/api/v1/materials/{material_id}").json()["data"]["version"]
+    r = client.patch(f"/api/v1/materials/{material_id}", json={"status": status, "expected_version": v})
+    assert r.status_code == 200, r.text
+
+
+def material_status(client, material_id):
+    return client.get(f"/api/v1/materials/{material_id}").json()["data"]["status"]
+
+
+class TestDestinationBatchStatus:
+    @pytest.mark.parametrize("source_status, expected", [
+        ("Low stock", "Healthy"),
+        ("Reserved", "Healthy"),
+        ("Healthy", "Healthy"),
+        ("Inspection", "Inspection"),
+    ])
+    def test_new_destination_batch_status(self, client, world, db, source_status, expected):
+        set_status(client, "M1", source_status)
+        tid = dispatched(client)
+        assert act(client, tid, "receive", destination_material_id="M1-Y2").status_code == 200
+        assert material_status(client, "M1-Y2") == expected
+        assert material_status(client, "M1") == source_status, "the source batch keeps its own status"
+        dest = stock(client, "M1-Y2")
+        assert (dest["quantity"], dest["available"], dest["reserved"]) == (30, 30, 0)
+        assert ledger(db, tid) == sorted([(TransactionType.TRANSFER_OUT, "M1", 30), (TransactionType.TRANSFER_IN, "M1-Y2", 30)])
+
+    def test_partial_receipt_from_low_stock_source_does_not_raise_low_stock_count(self, client, world):
+        set_status(client, "M1", "Low stock")
+        before = client.get("/api/v1/materials/summary").json()["data"]["low_stock_batches"]
+        tid = dispatched(client)
+        act(client, tid, "receive", destination_material_id="M1-Y2", received_quantity=25, discrepancy_reason="5 damaged")
+        after = client.get("/api/v1/materials/summary").json()["data"]
+        assert before == after["low_stock_batches"] == 1
+        assert material_status(client, "M1-Y2") == "Healthy"
+
+    def test_receipt_into_existing_batch_keeps_its_status(self, client, world, db):
+        db.add(Material(id="M1-Y2", name="Plate", category_id="STEEL", batch="B1", unit="sheets", status="LOW_STOCK",
+                        quantity=5, available=5, reserved=0, yard_id="Y2", location_id="L2"))
+        db.commit()
+        set_status(client, "M1", "Inspection")
+        tid = dispatched(client)
+        assert act(client, tid, "receive", destination_material_id="M1-Y2").status_code == 200
+        assert material_status(client, "M1-Y2") == "Low stock"
+
+    def test_whole_batch_relocation_keeps_its_own_status(self, client, world, db):
+        db.add(Material(id="W1", name="Valve", category_id="STEEL", batch="BW", unit="units", status="LOW_STOCK",
+                        quantity=50, available=50, reserved=0, yard_id="Y1", location_id="L1"))
+        db.commit()
+        tid = dispatched(client, material_id="W1", quantity=50)
+        assert act(client, tid, "receive").status_code == 200
+        assert material_status(client, "W1") == "Low stock"

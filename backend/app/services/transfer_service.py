@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidInputError, ItemNotFoundError
 from app.models.facility import StorageLocation, Yard
-from app.models.material import Material
+from app.models.material import Material, MaterialStatusEnum
 from app.models.program import Ship
 from app.models.transaction import MaterialTransaction, TransactionType
 from app.models.transfer import (
@@ -299,9 +299,13 @@ def receive(db: Session, transfer_id: int, data: TransferReceive) -> None:
         else:
             destination = locked.get(wanted)
             if destination is None:
+                # Low stock and Reserved describe the source batch, not the new one; a possible
+                # Inspection hold is carried over so it is never cleared silently.
+                status = MaterialStatusEnum.INSPECTION if source.status == MaterialStatusEnum.INSPECTION \
+                    else MaterialStatusEnum.HEALTHY
                 destination = Material(
                     id=wanted, name=source.name, category_id=source.category_id, batch=source.batch,
-                    unit=source.unit, status=source.status, quantity=0, available=0, reserved=0,
+                    unit=source.unit, status=status, quantity=0, available=0, reserved=0,
                     yard_id=transfer.to_yard_id, location_id=transfer.to_location_id, version=1,
                 )
                 db.add(destination)

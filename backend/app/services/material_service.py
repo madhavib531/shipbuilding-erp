@@ -24,7 +24,8 @@ def summary(db: Session) -> dict:
     return {
         "total_batches": total,
         "available_batches": available,
-        "available_percent": round(available * 100 / total, 1) if total else 0.0,
+        # Rounded down to one decimal so it only reads 100% when every batch has available stock.
+        "available_percent": (available * 1000 // total) / 10 if total else 0.0,
         "reserved_batches": reserved,
         "low_stock_batches": low,
         "low_stock_ship_allocated": low_on_ship,

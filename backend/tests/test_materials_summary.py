@@ -68,7 +68,7 @@ def test_mixed_batch_states(client, db, refs):
     s = summary(client)
     assert s["total_batches"] == 9
     assert s["available_batches"] == 5          # A, B, F, G, H
-    assert s["available_percent"] == round(5 * 100 / 9, 1) == 55.6
+    assert s["available_percent"] == 55.5        # 55.55… rounded down
     assert s["reserved_batches"] == 4           # B, C, F, I
     assert s["low_stock_batches"] == 2          # F, G — exact status only
     assert s["low_stock_ship_allocated"] == 1   # F
@@ -79,6 +79,52 @@ def test_percentage_is_100_when_every_batch_has_available_stock(client, db, refs
     batch(db, "A", 3, 3, 0)
     batch(db, "B", 3, 1, 2)
     assert summary(client)["available_percent"] == 100.0
+
+
+def _bulk(db, available_count, empty_count):
+    db.add_all(
+        [Material(id=f"A{i}", name="a", category_id="C", batch="B", unit="u", quantity=1, available=1, reserved=0, yard_id="Y1")
+         for i in range(available_count)]
+        + [Material(id=f"E{i}", name="e", category_id="C", batch="B", unit="u", quantity=0, available=0, reserved=0, yard_id="Y1")
+           for i in range(empty_count)]
+    )
+    db.commit()
+
+
+def test_percentage_never_reaches_100_while_a_batch_lacks_stock(client, db, refs):
+    _bulk(db, 1999, 1)
+    s = summary(client)
+    assert (s["total_batches"], s["available_batches"]) == (2000, 1999)
+    assert s["available_percent"] == 99.9
+
+
+@pytest.mark.parametrize("available, empty, expected", [
+    (0, 3, 0.0),     # no batch has stock
+    (1, 2, 33.3),    # 33.33… down
+    (2, 1, 66.6),    # 66.66… down (rounding to nearest would give 66.7)
+    (1, 0, 100.0),
+])
+def test_percentage_rounds_down_to_one_decimal(client, db, refs, available, empty, expected):
+    _bulk(db, available, empty)
+    assert summary(client)["available_percent"] == expected
+
+
+def test_low_stock_count_matches_status_filtered_list(client, db, refs):
+    def parity():
+        listed = client.get("/api/v1/materials", params={"status_filter": "Low stock", "limit": 1}).json()["data"]["total"]
+        return summary(client)["low_stock_batches"], listed
+
+    assert parity() == (0, 0)
+    batch(db, "L1", 5, 1, 0, status=S.LOW_STOCK, ship_id="S1")
+    batch(db, "L2", 5, 0, 5, status=S.LOW_STOCK)
+    batch(db, "N1", 5, 5, 0, status=S.INSPECTION)
+    batch(db, "N2", 5, 5, 0)
+    assert parity() == (2, 2)
+    v = client.get("/api/v1/materials/N2").json()["data"]["version"]
+    client.patch("/api/v1/materials/N2", json={"status": "Low stock", "expected_version": v})
+    assert parity() == (3, 3)
+    assert client.delete("/api/v1/materials/L2").status_code == 200
+    assert parity() == (2, 2)
 
 
 def test_low_stock_follows_manual_status_changes(client, db, refs):
