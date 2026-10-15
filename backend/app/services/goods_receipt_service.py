@@ -77,7 +77,17 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
     if previous is not None:
         return previous, False
 
-    order = orders._lock(db, order_id, data.expected_version)
+    try:
+        order = orders._lock(db, order_id, data.expected_version)
+    except ConflictError:
+        # A duplicate that passed the lookup above while the original was still in flight waited for the
+        # order lock and now sees the original's version bump. The original has committed by the time the
+        # lock is granted, so look the key up again: replay it if it matches, otherwise keep the conflict.
+        previous = replay()
+        if previous is None:
+            raise
+        db.rollback()  # release the order lock before the caller reads the receipt
+        return previous, False
     previous_status = orders._require_status(order, set(OPEN_PURCHASE_ORDER_STATUSES), "received")
     order_lines = {line.id: line for line in orders._lock_lines(db, order)}
 
