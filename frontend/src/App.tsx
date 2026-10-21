@@ -31,6 +31,7 @@ import { PurchaseOrderDetailDialog, orderTone } from "./components/PurchaseOrder
 import { SupplierDialog } from "./components/SupplierDialog";
 import { PURCHASE_ORDER_STATUSES, formatMoney, getPurchaseOrderSummary, listPurchaseOrders, type PurchaseOrder, type PurchaseOrderStatus, type PurchaseOrderSummary } from "./api/purchaseOrders";
 import { SUPPLIER_STATUSES, listSuppliers, type Supplier, type SupplierStatus } from "./api/suppliers";
+import { getMovements, getShipPrograms, type Movements, type ShipProgram } from "./api/dashboard";
 import { CURRENT_USER } from "./currentUser";
 
 const INVENTORY_PAGE_SIZE = 25;
@@ -155,6 +156,13 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
   const [transferError, setTransferError] = useState("");
   const [lowStock, setLowStock] = useState<{ items: ApiMaterial[]; total: number } | null>(null);
   const [lowStockError, setLowStockError] = useState("");
+  const [months, setMonths] = useState(6);
+  const [movements, setMovements] = useState<Movements | null>(null);
+  const [movementsError, setMovementsError] = useState("");
+  const [ships, setShips] = useState<ShipProgram[] | null>(null);
+  const [shipsError, setShipsError] = useState("");
+  const [delayed, setDelayed] = useState<{ items: PurchaseOrder[]; total: number } | null>(null);
+  const [delayedError, setDelayedError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -164,24 +172,51 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
     listMaterials({ skip: 0, limit: LOW_STOCK_ALERT_ROWS, status: "Low stock" }, controller.signal)
       .then(({ materials: items, total }) => setLowStock({ items, total }))
       .catch((err) => { if (!controller.signal.aborted) setLowStockError(err instanceof Error ? err.message : String(err)); });
+    getShipPrograms(controller.signal)
+      .then(setShips)
+      .catch((err) => { if (!controller.signal.aborted) setShipsError(err instanceof Error ? err.message : String(err)); });
+    listPurchaseOrders({ skip: 0, limit: 200, overdue: true }, controller.signal)
+      .then(({ purchase_orders: items, total }) => setDelayed({ items, total }))
+      .catch((err) => { if (!controller.signal.aborted) setDelayedError(err instanceof Error ? err.message : String(err)); });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setMovements(null);
+    getMovements(months, controller.signal)
+      .then((m) => { setMovements(m); setMovementsError(""); })
+      .catch((err) => { if (!controller.signal.aborted) setMovementsError(err instanceof Error ? err.message : String(err)); });
+    return () => controller.abort();
+  }, [months]);
+
+  const peak = Math.max(1, ...(movements?.months.flatMap((m) => [m.stock_in, m.stock_out]) ?? []));
+  const quiet = movements?.months.every((m) => !m.stock_in && !m.stock_out);
+  // Most overdue first: the earliest expected delivery among overdue open orders.
+  const worst = delayed?.items.reduce<PurchaseOrder | null>((a, b) => (!a || (b.expected_delivery_date ?? "") < (a.expected_delivery_date ?? "") ? b : a), null) ?? null;
+  const hour = new Date().getHours();
+  const greeting = `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${CURRENT_USER.name.split(" ")[0]}`;
 
   const view = (label: string): KpiView =>
     label === "Pending transfers" ? pendingTransfersKpi(transferSummary, transferError) : materialKpi(label, materials);
   const errorFor = (label: string) => (label === "Pending transfers" ? transferError : materials.error) || undefined;
 
   return <>
-    <PageHeader eyebrow="Operations overview" title="Good morning, Maya" description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download">Export report</Button><Button icon="plus" onClick={() => onNavigate("Inventory")}>Receive material</Button></>}/>
+    <PageHeader eyebrow="Operations overview" title={greeting} description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download" disabled title="Export is not available yet">Export report</Button><Button icon="plus" onClick={() => onNavigate("Procurement")}>Receive material</Button></>}/>
     <div className="kpi-grid">
       {DASHBOARD_KPIS.map((kpi, index) => { const v = view(kpi.label); return <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={kpi.icon}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{v.value}</strong><Badge tone={v.tone}>{v.delta}</Badge></div><p title={errorFor(kpi.label)}>{v.detail}</p></Card>; })}
     </div>
     <div className="dashboard-grid">
       <Card className="chart-card span-2">
-        <div className="card-heading"><div><h2>Inventory movement</h2><p>Received and consumed material value</p></div><Select defaultValue="6 months"><option>6 months</option><option>12 months</option></Select></div>
-        <div className="chart-legend"><span><i className="legend-received"/>Received</span><span><i className="legend-consumed"/>Consumed</span></div>
-        <div className="bar-chart">
-          {[["Oct",48,34],["Nov",64,47],["Dec",56,52],["Jan",78,61],["Feb",70,56],["Mar",88,66]].map(([month,a,b]) => <div className="bar-group" key={month}><div className="bar-pair"><span className="bar received" style={{height:`${a}%`}}/><span className="bar consumed" style={{height:`${b}%`}}/></div><small>{month}</small></div>)}
+        <div className="card-heading"><div><h2>Inventory movement</h2><p title={movements ? `In: ${movements.stock_in_types.join(", ")} · Out: ${movements.stock_out_types.join(", ")}` : undefined}>Ledger entries per month — counted, since batches use different units</p></div><Select aria-label="Movement period" value={String(months)} onChange={(e) => setMonths(Number(e.target.value))}><option value="6">6 months</option><option value="12">12 months</option></Select></div>
+        <div className="chart-legend"><span><i className="legend-received"/>Stock in</span><span><i className="legend-consumed"/>Stock out</span></div>
+        <div className="bar-chart" aria-busy={!movements && !movementsError}>
+          {movementsError && <p className="muted-copy" role="alert" style={{ alignSelf: "center" }}>Movement data couldn’t be loaded.</p>}
+          {movements && quiet && <p className="muted-copy" style={{ alignSelf: "center" }}>No stock movements in this period.</p>}
+          {movements && !quiet && movements.months.map((m) => {
+            const label = new Date(`${m.month}-01T00:00:00`).toLocaleString(undefined, { month: "short" });
+            return <div className="bar-group" key={m.month}><div className="bar-pair"><span className="bar received" title={`${label}: ${m.stock_in} in`} style={{ height: `${m.stock_in / peak * 100}%`, minHeight: m.stock_in ? undefined : 0 }}/><span className="bar consumed" title={`${label}: ${m.stock_out} out`} style={{ height: `${m.stock_out / peak * 100}%`, minHeight: m.stock_out ? undefined : 0 }}/></div><small>{label}</small></div>;
+          })}
         </div>
       </Card>
       <Card className="alert-card">
@@ -193,27 +228,27 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
         </div>
       </Card>
       <Card className="consumption-card">
-        <div className="card-heading"><div><h2>Ship-wise consumption</h2><p>Month-to-date by project</p></div><button className="icon-button"><Icon name="more"/></button></div>
+        <div className="card-heading"><div><h2>Ship programs</h2><p>Build progress and allocated batches · consumption isn’t tracked yet</p></div><button className="icon-button" aria-label="Open Ships & Yards" onClick={() => onNavigate("Ships & Yards")}><Icon name="more"/></button></div>
         <div className="ship-list">
-          {[
-            ["MV Calypso","Hull 72% complete","$1.84M",72],
-            ["NS Atlas","Outfitting in progress","$1.28M",54],
-            ["OSV Meridian","Systems integration","$846K",38],
-          ].map(([name,meta,value,progress]) => <div className="ship-row" key={name as string}><div className="ship-avatar"><Icon name="ship"/></div><div className="ship-progress"><span><strong>{name}</strong><b>{value}</b></span><small>{meta}</small><Progress value={progress as number}/></div></div>)}
+          {shipsError && <p className="muted-copy" role="alert">Ship programs couldn’t be loaded.</p>}
+          {ships && ships.length === 0 && <p className="muted-copy">No ships are recorded.</p>}
+          {ships?.map((ship) => <div className="ship-row" key={ship.id}><div className="ship-avatar"><Icon name="ship"/></div><div className="ship-progress"><span><strong>{ship.name}</strong><b>{ship.allocated_batches} batch{ship.allocated_batches === 1 ? "" : "es"}</b></span><small>{ship.build_status} · {ship.build_progress}% complete · {ship.yard}</small><Progress value={ship.build_progress}/></div></div>)}
         </div>
       </Card>
       <Card className="recommendation-card span-2">
-        <div className="recommendation-head"><span className="ai-mark"><Icon name="sparkles"/></span><div><span className="eyebrow">AI recommendation</span><h2>Reallocate 40 Cu-Ni pipe lengths to East Basin</h2></div><Badge tone="purple">87% confidence</Badge></div>
-        <p>NS Atlas demand is projected to exceed available stock in 9 days. Dry Dock 4 has 62 surplus lengths with no planned consumption for 6 weeks.</p>
-        <div className="recommendation-meta"><span><strong>$12.4K</strong><small>Expedite cost avoided</small></span><span><strong>2.5 days</strong><small>Schedule risk reduced</small></span><span><strong>TR-AI-1032</strong><small>Draft transfer</small></span></div>
-        <div className="recommendation-actions"><span><Icon name="warning" size={14}/> Requires human approval — suggestion only</span><div><Button variant="ghost">Review rationale</Button><Button onClick={() => onNavigate("Movements")}>Review & approve</Button></div></div>
+        <div className="recommendation-head"><span className="ai-mark"><Icon name="sparkles"/></span><div><span className="eyebrow">AI recommendation</span><h2>No recommendations available</h2></div><Badge tone="neutral">Not connected</Badge></div>
+        <p>No AI model is connected, so no reallocation or purchasing suggestions are generated. Nothing on this card is computed from your data yet.</p>
+        <div className="recommendation-actions"><span><Icon name="lock" size={14}/> Any future suggestion will require human approval before it changes stock</span></div>
       </Card>
       <Card className="orders-card">
-        <div className="card-heading"><div><h2>Delayed orders</h2><p>2 require supplier follow-up</p></div><button className="link-button" onClick={() => onNavigate("Procurement")}>View orders</button></div>
-        <div className="order-summary"><strong>$128.2K</strong><Badge tone="danger">Overdue</Badge></div>
-        <p className="muted-copy">BlueLine Components · PO-89118</p>
-        <div className="date-row"><span>Expected Mar 20</span><strong>6 days late</strong></div>
-        <Progress value={28}/>
+        <div className="card-heading"><div><h2>Delayed orders</h2><p title={delayedError || undefined}>{delayedError ? "Unavailable" : !delayed ? "Loading…" : delayed.total ? `${delayed.total} require${delayed.total === 1 ? "s" : ""} supplier follow-up` : "No orders past their delivery date"}</p></div><button className="link-button" onClick={() => onNavigate("Procurement")}>View orders</button></div>
+        {delayed && !worst && <div className="order-summary"><strong>None</strong><Badge tone="success">On time</Badge></div>}
+        {worst && <>
+          <div className="order-summary"><strong>{formatMoney(worst.outstanding_value, worst.currency)}</strong><Badge tone="danger">Overdue</Badge></div>
+          <p className="muted-copy">{worst.supplier.name} · {worst.display_id}</p>
+          <div className="date-row"><span>Expected {formatDay(worst.expected_delivery_date!)}</span><strong>{deliveryNote(worst).replace(" overdue", " late")}</strong></div>
+          <Progress value={worst.ordered_quantity ? Math.round(worst.received_quantity / worst.ordered_quantity * 100) : 0}/>
+        </>}
       </Card>
     </div>
   </>;
