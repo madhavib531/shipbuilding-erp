@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type FormEvent } from "react";
 import {
   audits,
-  materials,
   navItems,
   type PageName,
 } from "./data/mockData";
@@ -19,7 +18,8 @@ import {
   useToast,
   type IconName,
 } from "./components/ui";
-import { getMaterialSummary, getReferenceData, listMaterials, type ApiMaterial, type MaterialSummary, type ReferenceData } from "./api/materials";
+import { getMaterial, getMaterialSummary, getMaterialTransactions, getReferenceData, listMaterials, type ApiMaterial, type MaterialSummary, type MaterialTransaction, type ReferenceData } from "./api/materials";
+import { ApiError } from "./api/client";
 import { TRANSFER_STATUS_LABEL, getTransferSummary, listTransfers, type Transfer, type TransferStatus, type TransferSummary } from "./api/transfers";
 import { MaterialDialog } from "./components/MaterialDialog";
 import { TransferDialog } from "./components/TransferDialog";
@@ -363,12 +363,70 @@ function Movements() {
   </>;
 }
 
+type Lookup =
+  | { phase: "idle" | "searching" }
+  | { phase: "error" | "none"; message: string }
+  | { phase: "choose"; matches: ApiMaterial[]; total: number }
+  | { phase: "found"; material: ApiMaterial; history: MaterialTransaction[] | null; historyTotal: number; historyError: string };
+
+const HISTORY_ROWS = 15;
+
 function QRTracking() {
   const [lookup, setLookup] = useState("");
-  const found = materials.find(m => m.id.toLowerCase() === lookup.toLowerCase());
+  const [result, setResult] = useState<Lookup>({ phase: "idle" });
+
+  const show = async (material: ApiMaterial) => {
+    setResult({ phase: "found", material, history: null, historyTotal: 0, historyError: "" });
+    try {
+      const { transactions, total } = await getMaterialTransactions(material.id, HISTORY_ROWS);
+      setResult({ phase: "found", material, history: transactions, historyTotal: total, historyError: "" });
+    } catch (err) {
+      setResult({ phase: "found", material, history: [], historyTotal: 0, historyError: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const search = async (event: FormEvent) => {
+    event.preventDefault();
+    const q = lookup.trim();
+    if (!q) return setResult({ phase: "none", message: "Enter a batch ID, name or lot number." });
+    setResult({ phase: "searching" });
+    try {
+      const { materials: matches, total } = await listMaterials({ skip: 0, limit: 10, search: q });
+      const exact = matches.find((c) => c.id.toLowerCase() === q.toLowerCase());
+      if (exact || matches.length === 1) return await show(exact ?? matches[0]);
+      if (total > matches.length) {
+        // The exact ID may sit beyond the first page of partial matches.
+        try { return await show(await getMaterial(q)); } catch (err) { if (!(err instanceof ApiError && err.status === 404)) throw err; }
+      }
+      if (!matches.length) return setResult({ phase: "none", message: `No batch matches “${q}”.` });
+      setResult({ phase: "choose", matches, total });
+    } catch (err) {
+      setResult({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const m = result.phase === "found" ? result.material : null;
+  const last = result.phase === "found" ? result.history?.[0] : undefined;
   return <><PageHeader eyebrow="Traceability" title="QR tracking" description="Look up material identity, custody and allocation records."/>
-    <div className="two-column"><Card className="scanner-card"><span className="scanner-corners"><Icon name="scan" size={42}/></span><h2>QR scanner placeholder</h2><p>Camera scanning is not connected in this prototype.</p><Button variant="secondary" disabled>Camera unavailable</Button><small>Connect a supported scanner through your device integration layer.</small></Card>
-    <Card><div className="card-heading"><div><h2>Manual lookup</h2><p>Enter a material or batch identifier</p></div></div><div className="lookup-row"><Input placeholder="Try STL-10084" value={lookup} onChange={e => setLookup(e.target.value)}/><Button>Look up</Button></div>{found ? <div className="material-detail"><Badge tone={statusTone(found.status)}>{found.status}</Badge><h3>{found.name}</h3><p>{found.id} · Batch {found.batch}</p><dl><div><dt>Available</dt><dd>{found.available} {found.unit}</dd></div><div><dt>Yard</dt><dd>{found.yard}</dd></div><div><dt>Allocated ship</dt><dd>{found.ship}</dd></div><div><dt>Last movement</dt><dd>Today, 09:18</dd></div></dl></div> : <div className="lookup-empty"><Icon name="qr" size={28}/><strong>Awaiting material ID</strong><span>Material details and custody history will appear here.</span></div>}</Card></div>
+    <div className="two-column"><Card className="scanner-card"><span className="scanner-corners"><Icon name="scan" size={42}/></span><h2>QR scanning not available</h2><p>Camera scanning isn’t set up: it needs a QR-scanning library that hasn’t been approved yet.</p><Button variant="secondary" disabled>Camera unavailable</Button><small>Use manual lookup — a scanned label would resolve to the same batch ID.</small></Card>
+    <Card><div className="card-heading"><div><h2>Manual lookup</h2><p>Enter a batch ID, or search by name or lot number</p></div></div>
+      <form className="lookup-row" onSubmit={search}><Input aria-label="Batch ID, name or lot number" placeholder="e.g. PO-00001-1" value={lookup} onChange={(e) => setLookup(e.target.value)}/><Button type="submit" disabled={result.phase === "searching"}>{result.phase === "searching" ? "Looking up…" : "Look up"}</Button></form>
+      {result.phase === "error" && <div className="notice" role="alert" style={{ margin: "16px 0 0" }}><Icon name="warning"/>{result.message}</div>}
+      {result.phase === "choose" && <div className="material-detail"><p>{result.total > result.matches.length ? `Showing the first ${result.matches.length} of ${result.total} matches — refine the search or choose one` : `${result.total} batches match — choose one`}</p><div className="alert-list">{result.matches.map((c) => <button type="button" className="alert-row" key={c.id} onClick={() => show(c)}><span className="severity warning"><Icon name="box" size={16}/></span><span><strong>{c.name}</strong><small>{c.id} · Lot {c.batch} · {c.yard.name}</small></span><span className="alert-amount">{c.available} {c.unit} available<Icon name="chevron" size={14}/></span></button>)}</div></div>}
+      {m ? <div className="material-detail">
+        <Badge tone={statusTone(m.status)}>{m.status}</Badge><h3>{m.name}</h3><p>{m.id} · Batch {m.batch} · {m.category.name}</p>
+        <dl>
+          <div><dt>Available</dt><dd>{m.available} {m.unit}</dd></div>
+          <div><dt>On hand</dt><dd>{m.quantity} {m.unit}{m.reserved ? ` · ${m.reserved} reserved` : ""}{m.held_quantity ? ` · ${m.held_quantity} on inspection hold` : ""}</dd></div>
+          <div><dt>Yard</dt><dd>{m.yard.name}{m.location ? ` · Zone ${m.location.zone}, aisle ${m.location.aisle}` : ""}</dd></div>
+          <div><dt>Allocated ship</dt><dd>{m.ship?.name ?? "Unassigned"}</dd></div>
+          <div style={{ gridColumn: "1 / -1" }}><dt>Last movement</dt><dd>{result.phase === "found" && result.history === null ? "Loading…" : last ? `${last.transaction_type} · ${last.quantity} ${last.unit} · ${formatMoment(last.created_at)}${last.reference_id ? ` · ${last.reference_id}` : ""}` : "No movements recorded"}</dd></div>
+        </dl>
+        {result.phase === "found" && result.historyError && <p role="alert">Custody history couldn’t be loaded: {result.historyError}</p>}
+        {result.phase === "found" && !!result.history?.length && <><p style={{ marginTop: 16 }}>Custody history{result.historyTotal > result.history.length ? ` · latest ${result.history.length} of ${result.historyTotal}` : ""}</p>
+          <div className="audit-timeline" style={{ padding: 0 }} aria-label="Custody history">{result.history.map((t) => <div className="audit-event" key={t.id}><span className="audit-dot"><Icon name="check" size={14}/></span><div><strong>{t.transaction_type} · {t.quantity} {t.unit}</strong><p>{t.actor}{t.reference_id ? ` · ${t.reference_id}` : ""}{t.reason ? ` · ${t.reason}` : ""}</p></div><div><small>{formatMoment(t.created_at)}</small></div></div>)}</div></>}
+      </div> : (result.phase === "idle" || result.phase === "searching" || result.phase === "none") && <div className="lookup-empty"><Icon name="qr" size={28}/><strong>{result.phase === "none" ? result.message : "Awaiting batch ID"}</strong><span>Material details and custody history will appear here.</span></div>}
+    </Card></div>
   </>;
 }
 

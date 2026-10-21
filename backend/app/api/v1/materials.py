@@ -10,7 +10,7 @@ from app.models.program import Ship
 from app.models.transaction import MaterialTransaction
 from app.models.transfer import MaterialTransfer
 from app.schemas.common import SuccessResponse
-from app.schemas.material import MaterialCreate, MaterialUpdate, MaterialRead
+from app.schemas.material import MaterialCreate, MaterialUpdate, MaterialRead, MaterialTransactionRead
 from app.services import inspection_service, material_service
 
 router = APIRouter(prefix="/api/v1/materials", tags=["materials"])
@@ -100,6 +100,31 @@ def get_material(
     return SuccessResponse(
         message="Material retrieved successfully",
         data=material_data.model_dump()
+    )
+
+
+@router.get("/{material_id}/transactions", response_model=SuccessResponse)
+def list_material_transactions(
+    material_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Ledger rows for one batch, newest first: its custody and movement history."""
+    if db.get(Material, material_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Material with ID '{material_id}' not found")
+    query = db.query(MaterialTransaction).filter(MaterialTransaction.material_id == material_id)
+    total = query.count()
+    rows = (
+        query.order_by(MaterialTransaction.created_at.desc(), MaterialTransaction.id.desc())
+        .offset(skip).limit(limit).all()
+    )
+    return SuccessResponse(
+        message="Material transactions retrieved successfully",
+        data={
+            "transactions": [MaterialTransactionRead.model_validate(t).model_dump(mode="json") for t in rows],
+            "total": total, "skip": skip, "limit": limit,
+        },
     )
 
 

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 from datetime import datetime
 from app.models.material import MaterialStatusEnum
+from app.models.transaction import TransactionType
 
 
 class MaterialCategoryBase(BaseModel):
@@ -95,6 +96,24 @@ class MaterialRead(MaterialBase):
     yard: "YardRead"
     location: Optional["StorageLocationRead"] = None
     ship: Optional["ShipRead"] = None
+
+    class Config:
+        from_attributes = True
+
+
+class MaterialTransactionRead(BaseModel):
+    """One ledger row: a stock movement or status change of a batch."""
+    id: str
+    transaction_type: TransactionType
+    quantity: int
+    unit: str
+    from_location_id: Optional[str]
+    to_location_id: Optional[str]
+    reference_id: Optional[str]
+    actor: str
+    reason: Optional[str]
+    status: Optional[str]
+    created_at: datetime
 
     class Config:
         from_attributes = True

@@ -97,3 +97,23 @@ export async function deleteMaterial(id: string) {
 export async function getReferenceData(signal?: AbortSignal) {
   return (await apiRequest<Envelope<ReferenceData>>("/api/v1/reference-data", { signal })).data;
 }
+
+/** One ledger row: a stock movement or status change of a batch. */
+export type MaterialTransaction = {
+  id: string;
+  transaction_type: string;
+  quantity: number;
+  unit: string;
+  from_location_id: string | null;
+  to_location_id: string | null;
+  reference_id: string | null;
+  actor: string;
+  reason: string | null;
+  status: string | null;
+  created_at: string;
+};
+
+export async function getMaterialTransactions(id: string, limit: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ skip: "0", limit: String(limit) });
+  return (await apiRequest<Envelope<{ transactions: MaterialTransaction[]; total: number }>>(`/api/v1/materials/${encodeURIComponent(id)}/transactions?${params}`, { signal })).data;
+}
