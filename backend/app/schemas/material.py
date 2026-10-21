@@ -1,10 +1,21 @@
 """Material Pydantic schemas for validation and serialization."""
 
-from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List
+from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, model_validator
+from typing import Annotated, Optional, List
 from datetime import datetime
 from app.models.material import MaterialStatusEnum
 from app.models.transaction import TransactionType
+
+
+def _blank_to_none(value):
+    return None if isinstance(value, str) and not value.strip() else value
+
+
+# Blank strings become None so a whitespace-only reason or actor counts as missing.
+StockActor = Annotated[Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]],
+                       BeforeValidator(_blank_to_none)]
+StockReason = Annotated[Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]],
+                        BeforeValidator(_blank_to_none)]
 
 
 class MaterialCategoryBase(BaseModel):
@@ -54,8 +65,11 @@ class MaterialBase(BaseModel):
 
 
 class MaterialCreate(MaterialBase):
-    """Schema for creating materials."""
+    """Schema for creating materials. A batch created with stock records an opening-balance ADJUSTMENT,
+    so `actor` is required whenever quantity is above zero; `stock_reason` is an optional note."""
     id: str = Field(..., min_length=1, max_length=50)
+    actor: StockActor = None
+    stock_reason: StockReason = None
 
 
 class MaterialUpdate(BaseModel):
@@ -74,11 +88,13 @@ class MaterialUpdate(BaseModel):
     expected_version: Optional[int] = Field(
         None, ge=1, description="The version the client last read; the update is refused with 409 if it changed"
     )
+    actor: StockActor = Field(None, description="Required when quantity, available or reserved changes")
+    stock_reason: StockReason = Field(None, description="Required when quantity, available or reserved changes")
 
     # Cross-field quantity rules need the stored values, so the endpoint checks them after merging.
     @model_validator(mode="after")
     def reject_null_for_required_fields(self):
-        nullable = {"location_id", "ship_id", "expected_version"}
+        nullable = {"location_id", "ship_id", "expected_version", "actor", "stock_reason"}
         nulled = sorted(f for f in self.model_fields_set - nullable if getattr(self, f) is None)
         if nulled:
             raise ValueError(f"These fields cannot be null: {', '.join(nulled)}")

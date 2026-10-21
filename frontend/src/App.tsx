@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback, type FormEvent } from "react";
+import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
 import {
-  audits,
   navItems,
   type PageName,
 } from "./data/mockData";
@@ -31,10 +30,16 @@ import { PurchaseOrderDetailDialog, orderTone } from "./components/PurchaseOrder
 import { SupplierDialog } from "./components/SupplierDialog";
 import { PURCHASE_ORDER_STATUSES, formatMoney, getPurchaseOrderSummary, listPurchaseOrders, type PurchaseOrder, type PurchaseOrderStatus, type PurchaseOrderSummary } from "./api/purchaseOrders";
 import { SUPPLIER_STATUSES, listSuppliers, type Supplier, type SupplierStatus } from "./api/suppliers";
-import { getMovements, getShipPrograms, type Movements, type ShipProgram } from "./api/dashboard";
+import { getMovements, getShipPrograms, getYardOverview, type Movements, type ShipProgram, type YardOverview } from "./api/dashboard";
+import { AUDIT_SOURCES, listAuditEvents, type AuditEvent, type AuditSource } from "./api/audit";
+import { getHealth } from "./api/health";
+import { API_BASE_URL } from "./api/client";
+import { getAnalyticsOverview, type AnalyticsOverview } from "./api/analytics";
 import { CURRENT_USER } from "./currentUser";
 
 const INVENTORY_PAGE_SIZE = 25;
+
+const MOVEMENT_PAGE_SIZE = 25;
 
 const MOVEMENT_TABS: { label: string; statuses: TransferStatus[] }[] = [
   { label: "All movements", statuses: [] },
@@ -51,8 +56,8 @@ const navIcons: Record<PageName, IconName> = {
   "QR Tracking": "qr",
   "Ships & Yards": "ship",
   Procurement: "procurement",
-  "AI Analytics": "analytics",
-  "AI Assistant": "assistant",
+  Analytics: "analytics",
+  Assistant: "assistant",
   Quality: "quality",
   "Audit Logs": "audit",
   Settings: "settings",
@@ -65,7 +70,14 @@ const statusTone = (status: string) => {
   return "info" as const;
 };
 
-function Sidebar({ active, onNavigate, open, onClose, lowStockCount }: { active: PageName; onNavigate: (page: PageName) => void; open: boolean; onClose: () => void; lowStockCount: number | null }) {
+type ApiStatus = { state: "checking" | "online" | "degraded" | "offline"; version?: string; checkedAt?: string };
+
+const apiStatusLabel = (s: ApiStatus) =>
+  s.state === "online" ? "API connected" : s.state === "degraded" ? "Database unavailable" : s.state === "offline" ? "API unreachable" : "Checking API…";
+
+const checkedTime = (iso?: string) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
+
+function Sidebar({ active, onNavigate, open, onClose, lowStockCount, apiStatus }: { active: PageName; onNavigate: (page: PageName) => void; open: boolean; onClose: () => void; lowStockCount: number | null; apiStatus: ApiStatus }) {
   return <>
     {open && <button className="sidebar-scrim" onClick={onClose} aria-label="Close navigation"/>}
     <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
@@ -78,29 +90,40 @@ function Sidebar({ active, onNavigate, open, onClose, lowStockCount }: { active:
         <p className="nav-label">Workspace</p>
         {navItems.slice(0, 6).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span>{item === "Inventory" && !!lowStockCount && <em title={`${lowStockCount} batch${lowStockCount === 1 ? "" : "es"} flagged Low stock`}>{lowStockCount.toLocaleString()}</em>}</button>)}
         <p className="nav-label">Intelligence</p>
-        {navItems.slice(6, 8).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span><i>AI</i></button>)}
+        {navItems.slice(6, 8).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span></button>)}
         <p className="nav-label">Administration</p>
         {navItems.slice(8).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span></button>)}
       </nav>
       <div className="sidebar-footer">
-        <div className="sync-row"><span className="sync-dot"/><div><strong>Local cache ready</strong><small>Synced 2 min ago</small></div></div>
-        <div className="version">ERP workspace · v2.4</div>
+        <div className="sync-row"><span className="sync-dot" style={apiStatus.state === "online" ? undefined : { background: apiStatus.state === "checking" ? "#9aa5b8" : "#d64545" }}/><div><strong>{apiStatusLabel(apiStatus)}</strong><small>{apiStatus.checkedAt ? `Checked ${checkedTime(apiStatus.checkedAt)} · live data, no offline cache` : "Live data, no offline cache"}</small></div></div>
+        <div className="version">ERP workspace · API {apiStatus.version ? `v${apiStatus.version}` : "version unknown"}</div>
       </div>
     </aside>
   </>;
 }
 
-function Topbar({ onMenu, onNavigate }: { onMenu: () => void; onNavigate: (page: PageName) => void }) {
+function Topbar({ onMenu, onNavigate, onSearch, apiStatus }: { onMenu: () => void; onNavigate: (page: PageName) => void; onSearch: (text: string) => void; apiStatus: ApiStatus }) {
   const [searchOpen, setSearchOpen] = useState(false);
+  const [text, setText] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen(true); input.current?.focus(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return <header className="topbar">
     <button className="icon-button menu-button" onClick={onMenu} aria-label="Open navigation"><Icon name="menu"/></button>
     <div className={`global-search ${searchOpen ? "search-open" : ""}`} onClick={() => setSearchOpen(true)}>
-      <Icon name="search"/><input aria-label="Search everything" placeholder="Search materials, POs, ships…"/><kbd>⌘ K</kbd>
+      <Icon name="search"/><input ref={input} aria-label="Search batches" placeholder="Search batches by ID, name or lot…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) { onSearch(text.trim()); setSearchOpen(false); } }}/><kbd>Ctrl K</kbd>
     </div>
     <div className="topbar-actions">
-      <div className="offline-pill"><Icon name="wifiOff" size={14}/><span>Offline-ready</span></div>
-      <Select aria-label="Select yard" defaultValue="Harbor North"><option>Harbor North</option><option>East Basin</option><option>Dry Dock 4</option></Select>
-      <button className="icon-button notification-button" aria-label="Notifications"><Icon name="bell"/><span/></button>
+      <div className="offline-pill" title={apiStatus.checkedAt ? `Checked at ${checkedTime(apiStatus.checkedAt)}` : undefined}><Icon name={apiStatus.state === "online" ? "check" : "warning"} size={14}/><span>{apiStatusLabel(apiStatus)}</span></div>
+      <Select aria-label="Select yard" disabled title="A global yard selection isn’t available yet — use the yard filters on each page" value=""><option value="">All yards</option></Select>
+      <button className="icon-button notification-button" aria-label="Notifications (not available yet)" title="Notifications aren’t available yet" disabled><Icon name="bell"/></button>
       <button className="profile" onClick={() => onNavigate("Settings")}><span className="avatar">{CURRENT_USER.initials}</span><span className="profile-copy"><strong>{CURRENT_USER.name}</strong><small>{CURRENT_USER.role}</small></span><Icon name="chevron" size={14}/></button>
     </div>
   </header>;
@@ -254,8 +277,8 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
   </>;
 }
 
-function Inventory({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
-  const [query, setQuery] = useState("");
+function Inventory({ onMaterialsChanged, searchRequest }: { onMaterialsChanged: () => void; searchRequest: { text: string; n: number } | null }) {
+  const [query, setQuery] = useState(searchRequest?.text ?? "");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
   const [yard, setYard] = useState("");
@@ -274,6 +297,9 @@ function Inventory({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
     const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
     return () => window.clearTimeout(id);
   }, [query]);
+
+  // A search typed in the top bar while Inventory is already open.
+  useEffect(() => { if (searchRequest) setQuery(searchRequest.text); }, [searchRequest]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -323,8 +349,14 @@ const MOVEMENT_ACTION: Partial<Record<TransferStatus, string>> = { Requested: "R
 const formatMoment = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
+/** Ledger quantity as displayed. Manual adjustments (no reference document) are signed: +5 added, −3 removed,
+ * 0 when only available/reserved moved. Everything else, including transit-shortage write-offs, is shown as recorded. */
+const ledgerQuantity = (type: string, quantity: number, reference: string | null) =>
+  type === "Adjustment" && !reference ? (quantity > 0 ? `+${quantity}` : quantity < 0 ? `−${-quantity}` : "0") : String(quantity);
+
 function Movements() {
   const [tab, setTab] = useState(MOVEMENT_TABS[0]);
+  const [skip, setSkip] = useState(0);
   const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
   const [loadError, setLoadError] = useState("");
   const [items, setItems] = useState<Transfer[]>([]);
@@ -349,7 +381,7 @@ function Movements() {
     const controller = new AbortController();
     setState("loading");
     getTransferSummary(controller.signal).then(setSummary).catch(() => { if (!controller.signal.aborted) setSummary(null); });
-    listTransfers(tab.statuses, controller.signal)
+    listTransfers(tab.statuses, { skip, limit: MOVEMENT_PAGE_SIZE }, controller.signal)
       .then(({ transfers, total: count }) => {
         setItems(transfers);
         setTotal(count);
@@ -361,7 +393,7 @@ function Movements() {
         setState("error");
       });
     return () => controller.abort();
-  }, [tab, reloadKey]);
+  }, [tab, skip, reloadKey]);
 
   const done = useCallback((message: string) => {
     setCreating(false);
@@ -380,7 +412,7 @@ function Movements() {
 
   return <><PageHeader eyebrow="Material logistics" title="Movements" description="Approve, dispatch and receive transfers between yards." actions={<Button icon="plus" onClick={() => setCreating(true)}>Create transfer</Button>}/>
     <div className="mini-kpis">{cards.map(([label, value, tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={tone}>Live queue</Badge></Card>)}</div>
-    <Card className="table-card"><div className="tabs">{MOVEMENT_TABS.map(item => <button className={tab.label === item.label ? "active" : ""} onClick={() => setTab(item)} key={item.label}>{item.label}</button>)}</div>
+    <Card className="table-card"><div className="tabs">{MOVEMENT_TABS.map(item => <button className={tab.label === item.label ? "active" : ""} onClick={() => { setTab(item); setSkip(0); }} key={item.label}>{item.label}</button>)}</div>
       {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
       {state !== "ready"
         ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)} title={state === "loading" ? "Loading transfers" : state === "empty" ? "No transfers here" : "Transfers couldn’t be loaded"} message={state === "loading" ? "Fetching the movement queue…" : state === "empty" ? "Use Create transfer to move available stock between yards or locations." : undefined}/>
@@ -390,7 +422,7 @@ function Movements() {
           const action = MOVEMENT_ACTION[t.status];
           return <div className="movement-row" key={t.id}><span className="movement-icon"><Icon name="movement"/></span><div className="movement-main"><span><strong>{t.material.name}</strong><Badge tone={statusTone(label)}>{label}</Badge></span><p>{t.from_yard.name}{t.from_location ? ` (Zone ${t.from_location.zone})` : ""} → {t.to_yard.name}{t.to_location ? ` (Zone ${t.to_location.zone})` : ""}</p></div><div><strong>{t.quantity} {t.unit}</strong><small>{t.display_id}</small></div><div><strong>{last ? formatMoment(last.created_at) : formatMoment(t.updated_at)}</strong><small>Updated by {last?.actor ?? t.requested_by}</small></div><Button variant={t.status === "Requested" ? "primary" : "secondary"} onClick={() => setOpenId(t.id)}>{action ?? "Details"}</Button></div>;
         })}</div>}
-      {state === "ready" && total > items.length && <div className="table-footer"><span>Showing the {items.length} most recently updated of {total} transfers</span></div>}
+      <div className="table-footer"><span>{state === "ready" ? `Showing ${skip + 1}–${skip + items.length} of ${total} transfers` : `${total} transfers`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - MOVEMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + MOVEMENT_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     {creating && <TransferDialog refs={refs} refsError={refsError} onClose={() => setCreating(false)} onDone={done}/>}
     {openId !== null && <TransferActionDialog transferId={openId} tone={statusTone} onClose={() => setOpenId(null)} onDone={done}/>}
@@ -455,11 +487,11 @@ function QRTracking() {
           <div><dt>On hand</dt><dd>{m.quantity} {m.unit}{m.reserved ? ` · ${m.reserved} reserved` : ""}{m.held_quantity ? ` · ${m.held_quantity} on inspection hold` : ""}</dd></div>
           <div><dt>Yard</dt><dd>{m.yard.name}{m.location ? ` · Zone ${m.location.zone}, aisle ${m.location.aisle}` : ""}</dd></div>
           <div><dt>Allocated ship</dt><dd>{m.ship?.name ?? "Unassigned"}</dd></div>
-          <div style={{ gridColumn: "1 / -1" }}><dt>Last movement</dt><dd>{result.phase === "found" && result.history === null ? "Loading…" : last ? `${last.transaction_type} · ${last.quantity} ${last.unit} · ${formatMoment(last.created_at)}${last.reference_id ? ` · ${last.reference_id}` : ""}` : "No movements recorded"}</dd></div>
+          <div style={{ gridColumn: "1 / -1" }}><dt>Last movement</dt><dd>{result.phase === "found" && result.history === null ? "Loading…" : last ? `${last.transaction_type} · ${ledgerQuantity(last.transaction_type, last.quantity, last.reference_id)} ${last.unit} · ${formatMoment(last.created_at)}${last.reference_id ? ` · ${last.reference_id}` : ""}` : "No movements recorded"}</dd></div>
         </dl>
         {result.phase === "found" && result.historyError && <p role="alert">Custody history couldn’t be loaded: {result.historyError}</p>}
         {result.phase === "found" && !!result.history?.length && <><p style={{ marginTop: 16 }}>Custody history{result.historyTotal > result.history.length ? ` · latest ${result.history.length} of ${result.historyTotal}` : ""}</p>
-          <div className="audit-timeline" style={{ padding: 0 }} aria-label="Custody history">{result.history.map((t) => <div className="audit-event" key={t.id}><span className="audit-dot"><Icon name="check" size={14}/></span><div><strong>{t.transaction_type} · {t.quantity} {t.unit}</strong><p>{t.actor}{t.reference_id ? ` · ${t.reference_id}` : ""}{t.reason ? ` · ${t.reason}` : ""}</p></div><div><small>{formatMoment(t.created_at)}</small></div></div>)}</div></>}
+          <div className="audit-timeline" style={{ padding: 0 }} aria-label="Custody history">{result.history.map((t) => <div className="audit-event" key={t.id}><span className="audit-dot"><Icon name="check" size={14}/></span><div><strong>{t.transaction_type} · {ledgerQuantity(t.transaction_type, t.quantity, t.reference_id)} {t.unit}</strong><p>{t.actor}{t.reference_id ? ` · ${t.reference_id}` : ""}{t.reason ? ` · ${t.reason}` : ""}</p></div><div><small>{formatMoment(t.created_at)}</small></div></div>)}</div></>}
       </div> : (result.phase === "idle" || result.phase === "searching" || result.phase === "none") && <div className="lookup-empty"><Icon name="qr" size={28}/><strong>{result.phase === "none" ? result.message : "Awaiting batch ID"}</strong><span>Material details and custody history will appear here.</span></div>}
     </Card></div>
   </>;
@@ -647,32 +679,280 @@ function Procurement({ onMaterialsChanged }: { onMaterialsChanged: () => void })
   </>;
 }
 
-function Analytics() {
-  return <><PageHeader eyebrow="Decision intelligence" title="AI analytics" description="Forecast and anomaly insights based on cached planning data." actions={<Badge tone="purple"><Icon name="sparkles" size={13}/> Advisory only</Badge>}/>
-    <div className="ai-disclaimer"><Icon name="warning"/><div><strong>AI features are represented with static mock outputs.</strong><span>No model is running, and recommendations require review before execution.</span></div></div>
-    <div className="analytics-grid"><Card className="span-2"><div className="card-heading"><div><h2>90-day demand forecast</h2><p>Projected material demand by category</p></div><Select><option>All ship programs</option></Select></div><div className="forecast-chart"><svg viewBox="0 0 700 220" preserveAspectRatio="none" aria-label="Demand forecast line chart"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#315ce9" stopOpacity=".22"/><stop offset="1" stopColor="#315ce9" stopOpacity="0"/></linearGradient></defs><path className="gridline" d="M0 35H700M0 90H700M0 145H700M0 200H700"/><path className="area" d="M0 170 C80 160 100 120 180 135 S280 75 355 100 S455 125 520 60 S620 75 700 25 V220 H0Z"/><path className="forecast-line" d="M0 170 C80 160 100 120 180 135 S280 75 355 100 S455 125 520 60 S620 75 700 25"/></svg><div><span>Apr</span><span>May</span><span>Jun</span></div></div></Card>
-      <Card><div className="card-heading"><div><h2>Anomaly detection</h2><p>Unusual activity in 24 hours</p></div><Badge tone="warning">3 found</Badge></div>{[["High cable consumption","2.4× baseline","MV Calypso"],["Duplicate receipt quantity","PO-89142","Harbor North"],["Unusual stock adjustment","-84 panels","East Basin"]].map(a => <div className="anomaly" key={a[0]}><span><Icon name="warning"/></span><div><strong>{a[0]}</strong><p>{a[1]} · {a[2]}</p></div><Icon name="chevron"/></div>)}</Card>
-      <Card><div className="card-heading"><div><h2>Aging stock</h2><p>Value held over 180 days</p></div></div><div className="big-stat">$486K</div><p className="muted-copy">4.8% of current inventory value</p><div className="aging-bars">{[["181–270 days",58],["271–365 days",31],["365+ days",18]].map(([l,v]) => <div key={l as string}><span><small>{l}</small><strong>{v}%</strong></span><Progress value={v as number}/></div>)}</div></Card>
-      <Card className="span-2 suggestion-panel"><div className="card-heading"><div><span className="eyebrow">Explainable suggestion</span><h2>Reallocate surplus structural steel</h2></div><Badge tone="purple">91% confidence</Badge></div><p>Move 36 AH36 sheets from OSV Meridian reserve at Dry Dock 4 to MV Calypso at Harbor North.</p><div className="reason-grid"><div><strong>Why this suggestion</strong><ul><li>OSV Meridian demand decreased after design revision 14B</li><li>MV Calypso burn rate is 18% above plan</li><li>Transfer costs less than expedited procurement</li></ul></div><div><strong>Expected impact</strong><dl><div><dt>Schedule protection</dt><dd>4 days</dd></div><div><dt>Cost avoided</dt><dd>$18,600</dd></div><div><dt>Confidence</dt><dd>91%</dd></div></dl></div></div><div className="recommendation-actions"><span><Icon name="lock"/>No action occurs without approval</span><Button>Send for approval</Button></div></Card>
+const pct = (ratio: number | null) => (ratio === null ? "—" : `${Math.round(ratio * 1000) / 10}%`);
+const leadTime = (hours: number | null) => (hours === null ? "—" : hours >= 48 ? `${(hours / 24).toFixed(1)} days` : `${hours.toFixed(1)} h`);
+
+function Analytics({ onNavigate }: { onNavigate: (page: PageName) => void }) {
+  const [data, setData] = useState<AnalyticsOverview | null>(null);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setError("");
+    getAnalyticsOverview(controller.signal)
+      .then(setData)
+      .catch((err) => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : String(err)); });
+    return () => controller.abort();
+  }, [reloadKey]);
+
+  const header = <PageHeader eyebrow="Decision support" title="Analytics" description="Figures computed directly from your live records with fixed rules. No AI model is used and nothing is forecast." actions={<Badge tone="neutral">{data ? `Rule-based · computed ${formatMoment(data.generated_at)}` : "Rule-based"}</Badge>}/>;
+  if (error) return <>{header}<Card><StatePanel type="error" title="Analytics couldn’t be loaded" message={error} onRetry={() => setReloadKey((k) => k + 1)}/></Card></>;
+  if (!data) return <>{header}<Card><StatePanel type="loading" title="Computing analytics" message="Reading live records…"/></Card></>;
+
+  const flagged = data.attention.filter((a) => a.count > 0);
+  const agingTotal = data.aging.reduce((n, a) => n + a.batches, 0);
+  const t = data.transfers, q = data.inspections;
+  return <>{header}
+    <div className="analytics-grid">
+      <Card className="span-2"><div className="card-heading"><div><h2>Stock by category</h2><p>Batches per category; quantities aren’t summed because units differ</p></div></div>
+        {data.categories.length === 0 ? <p className="muted-copy" style={{ marginTop: 16 }}>No batches recorded yet.</p>
+          : <div className="table-scroll" style={{ marginTop: 12 }}><table><thead><tr><th>Category</th><th>Batches</th><th>With available stock</th><th>With reserved stock</th><th>Stock, none available</th></tr></thead>
+            <tbody>{data.categories.map((c) => <tr key={c.category}><td><strong>{c.category}</strong></td><td>{c.batches}</td><td>{c.with_available}</td><td>{c.with_reserved}</td><td>{c.stock_but_none_available}</td></tr>)}</tbody></table></div>}
+      </Card>
+      <Card><div className="card-heading"><div><h2>Needs attention</h2><p>Records flagged by fixed rules</p></div><Badge tone={flagged.length ? "warning" : "success"}>{flagged.length ? `${flagged.reduce((n, a) => n + a.count, 0)} flagged` : "None"}</Badge></div>
+        {flagged.length === 0 && <p className="muted-copy" style={{ marginTop: 16 }}>Nothing is flagged. Rules checked: {data.attention.map((a) => a.title.toLowerCase()).join("; ")}.</p>}
+        {flagged.map((a) => <button type="button" className="anomaly" style={{ width: "100%", border: 0, background: "transparent", textAlign: "left", cursor: "pointer" }} key={a.key} onClick={() => onNavigate(a.page as PageName)} title={a.rule}>
+          <span><Icon name="warning"/></span><div><strong>{a.count} · {a.title}</strong><p>{a.examples[0]}{a.count > 1 ? ` and ${a.count - 1} more` : ""}</p></div><Icon name="chevron"/></button>)}
+      </Card>
+      <Card><div className="card-heading"><div><h2>Batch record age</h2><p>Batches holding stock, by when their record was created</p></div></div>
+        <div className="big-stat">{agingTotal}</div><p className="muted-copy">batches with stock on hand</p>
+        <div className="aging-bars">{data.aging.map((a) => <div key={a.label}><span><small>{a.label}</small><strong>{a.batches}</strong></span><Progress value={agingTotal ? Math.round(a.batches / agingTotal * 100) : 0}/></div>)}</div>
+      </Card>
+      <Card className="span-2"><div className="card-heading"><div><h2>Supplier performance</h2><p>Approved orders; on time means the first delivery arrived by the expected date</p></div></div>
+        {data.suppliers.length === 0 ? <p className="muted-copy" style={{ marginTop: 16 }}>No approved purchase orders yet.</p>
+          : <div className="table-scroll" style={{ marginTop: 12 }}><table><thead><tr><th>Supplier</th><th>Orders</th><th>Delivered orders</th><th>First delivery on time</th><th>Deliveries</th><th>Rejected share</th></tr></thead>
+            <tbody>{data.suppliers.map((sp) => <tr key={sp.supplier_id}><td><strong>{sp.supplier}</strong></td><td>{sp.orders}</td><td>{sp.orders_delivered}</td><td><strong>{pct(sp.on_time_rate)}</strong><small>{sp.first_delivery_on_time} of {sp.orders_delivered}</small></td><td>{sp.deliveries}</td><td><strong>{pct(sp.rejection_rate)}</strong><small>{sp.rejected_quantity} of {sp.received_quantity + sp.rejected_quantity} delivered</small></td></tr>)}</tbody></table></div>}
+      </Card>
+      <Card><div className="card-heading"><div><h2>Transfers</h2><p>Received in the last {t.window_days} days</p></div></div>
+        <div className="big-stat">{t.received}</div><p className="muted-copy">transfers received</p>
+        <div className="role-list" style={{ marginTop: 12 }}>
+          <div><span className="role-icon"><Icon name="clock"/></span><span><strong>{leadTime(t.average_lead_time_hours)}</strong><small>Average dispatch-to-receipt time</small></span><span/><span/></div>
+          <div><span className="role-icon"><Icon name="warning"/></span><span><strong>{t.with_shortage}</strong><small>Received short</small></span><span/><span/></div>
+          <div><span className="role-icon"><Icon name="movement"/></span><span><strong>{t.in_transit} in transit</strong><small>{t.in_transit_overdue} past expected arrival</small></span><span/><span/></div>
+        </div>
+      </Card>
+      <Card><div className="card-heading"><div><h2>Inspections</h2><p>Holds opened in the last {q.window_days} days</p></div></div>
+        <div className="big-stat">{q.holds_opened}</div><p className="muted-copy">holds opened · {q.open} open now</p>
+        <div className="role-list" style={{ marginTop: 12 }}>
+          <div><span className="role-icon"><Icon name="quality"/></span><span><strong>{q.quantity_released} released · {q.quantity_rejected} rejected</strong><small>of {q.quantity_held} held</small></span><span/><span/></div>
+          <div><span className="role-icon"><Icon name="warning"/></span><span><strong>{pct(q.rejection_rate)}</strong><small>Rejected share of decided quantity</small></span><span/><span/></div>
+        </div>
+      </Card>
     </div>
   </>;
 }
 
-function Assistant() {
+type AssistantAnswer = { title: string; summary: string; columns?: string[]; rows?: string[][]; source: string; page?: PageName };
+type AssistantTurn = { id: number; question: string; answer?: AssistantAnswer; error?: string };
+
+const ASSISTANT_QUESTIONS = [
+  "Which batches are flagged Low stock?",
+  "Which purchase orders are overdue?",
+  "Which transfers are awaiting approval?",
+  "What is in transit right now?",
+  "Which inspections are open?",
+  "What needs attention?",
+  "How are suppliers performing?",
+];
+
+// An identifier with at least one hyphen and one digit, e.g. PO-00001-1, E2E-PG-001 or TR-00001.
+const ID_TOKEN = /\b(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b/;
+const RECORD_NUMBER = /^(TR|PO|QI)-?\d{1,9}$/i;
+
+/** Matches a question to one fixed rule and answers it from live API data. Nothing is generated or guessed. */
+async function answerQuestion(question: string): Promise<AssistantAnswer> {
+  const q = question.toLowerCase();
+  const token = question.match(ID_TOKEN)?.[0];
+  if (token && RECORD_NUMBER.test(token)) {
+    const { events, total } = await listAuditEvents({ skip: 0, limit: 10, search: token });
+    const label = token.toUpperCase();
+    return { title: `History of ${label}`, summary: total ? `${total} recorded event${total === 1 ? " mentions" : "s mention"} ${label}${total > events.length ? `; showing the latest ${events.length}` : ""}.` : `No recorded events mention ${label}.`,
+      columns: ["When", "Event", "Record", "Actor"], rows: events.map((e) => [formatMoment(e.created_at), `${e.source_label} · ${e.action}`, e.record ?? "—", e.actor]), source: "Audit log · stock, transfer, purchase-order and inspection events", page: "Audit Logs" };
+  }
+  if (/low.?stock|running low/.test(q)) {
+    const { materials: items, total } = await listMaterials({ skip: 0, limit: 10, status: "Low stock" });
+    return { title: "Batches flagged Low stock", summary: total ? `${total} batch${total === 1 ? " is" : "es are"} flagged Low stock${total > items.length ? `; showing ${items.length}` : ""}.` : "No batches are flagged Low stock.",
+      columns: ["Batch", "Available", "Yard", "Ship"], rows: items.map((m) => [`${m.name} (${m.id})`, `${m.available} ${m.unit}`, m.yard.name, m.ship?.name ?? "Unassigned"]), source: "Inventory · status = Low stock", page: "Inventory" };
+  }
+  if (/overdue|late|delayed/.test(q) && /order|po\b|purchase|deliver|supplier/.test(q)) {
+    const { purchase_orders: items, total } = await listPurchaseOrders({ skip: 0, limit: 10, overdue: true });
+    return { title: "Overdue purchase orders", summary: total ? `${total} open order${total === 1 ? " is" : "s are"} past the expected delivery date.` : "No open purchase orders are overdue.",
+      columns: ["Order", "Supplier", "Expected", "Received", "Outstanding value"], rows: items.map((o) => [o.display_id, o.supplier.name, o.expected_delivery_date ?? "—", `${o.received_quantity} of ${o.ordered_quantity}`, formatMoney(o.outstanding_value, o.currency)]), source: "Procurement · open orders past expected delivery", page: "Procurement" };
+  }
+  if (/approv/.test(q) && /transfer|movement/.test(q)) {
+    const { transfers: items, total } = await listTransfers(["Requested"], { skip: 0, limit: 10 });
+    return { title: "Transfers awaiting approval", summary: total ? `${total} transfer request${total === 1 ? " is" : "s are"} waiting for approval.` : "No transfer requests are waiting for approval.",
+      columns: ["Transfer", "Batch", "Quantity", "Route", "Requested by"], rows: items.map((x) => [x.display_id, x.material.id, `${x.quantity} ${x.unit}`, `${x.from_yard.name} → ${x.to_yard.name}`, x.requested_by]), source: "Movements · status = Requested", page: "Movements" };
+  }
+  if (/transit|on the way|dispatched|shipping/.test(q)) {
+    const { transfers: items, total } = await listTransfers(["Dispatched"], { skip: 0, limit: 10 });
+    return { title: "Transfers in transit", summary: total ? `${total} transfer${total === 1 ? " is" : "s are"} in transit.` : "Nothing is in transit.",
+      columns: ["Transfer", "Batch", "Quantity", "Route", "Expected"], rows: items.map((x) => [x.display_id, x.material.id, `${x.quantity} ${x.unit}`, `${x.from_yard.name} → ${x.to_yard.name}`, x.expected_arrival ?? "Not set"]), source: "Movements · status = Dispatched", page: "Movements" };
+  }
+  if (/inspect|quality|hold\b|holds\b|qi-/.test(q)) {
+    const { inspections: items, total } = await listInspections({ skip: 0, limit: 10, status: "Open" });
+    return { title: "Open inspections", summary: total ? `${total} inspection hold${total === 1 ? " is" : "s are"} awaiting a decision.` : "No inspection holds are open.",
+      columns: ["Inspection", "Batch", "Awaiting", "Order"], rows: items.map((h) => [h.display_id, `${h.material.name} (${h.material.id})`, `${h.outstanding_quantity} ${h.material.unit}`, h.goods_receipt_line.receipt.purchase_order.display_id]), source: "Quality · status = Open", page: "Quality" };
+  }
+  if (/supplier/.test(q)) {
+    const { suppliers } = await getAnalyticsOverview();
+    return { title: "Supplier performance", summary: suppliers.length ? `${suppliers.length} supplier${suppliers.length === 1 ? " has" : "s have"} approved orders.` : "No supplier has approved orders yet.",
+      columns: ["Supplier", "Orders", "First delivery on time", "Rejected share"], rows: suppliers.map((sp) => [sp.supplier, String(sp.orders), `${pct(sp.on_time_rate)} (${sp.first_delivery_on_time} of ${sp.orders_delivered})`, pct(sp.rejection_rate)]), source: "Analytics · approved purchase orders and receipts", page: "Analytics" };
+  }
+  if (/attention|risk|problem|issue|flag|wrong/.test(q)) {
+    const { attention } = await getAnalyticsOverview();
+    const flagged = attention.filter((a) => a.count > 0);
+    return { title: "Needs attention", summary: flagged.length ? `${flagged.length} rule${flagged.length === 1 ? "" : "s"} flagged records.` : "Nothing is flagged by the current rules.",
+      columns: ["Rule", "Count", "Example"], rows: attention.map((a) => [a.title, String(a.count), a.examples[0] ?? "—"]), source: "Analytics · fixed attention rules", page: "Analytics" };
+  }
+  if (token || /batch|material|lot\b/.test(q)) {
+    const term = token ?? question.replace(/\?/g, "").split(/\s+/).filter((w) => w.length > 2 && !/^(which|what|where|batch|batches|material|materials|show|find|about|the|for|lot)$/i.test(w)).join(" ");
+    if (term) {
+      const { materials: items, total } = await listMaterials({ skip: 0, limit: 10, search: term });
+      return { title: `Batches matching “${term}”`, summary: total ? `${total} batch${total === 1 ? " matches" : "es match"}.` : `No batch matches “${term}”.`,
+        columns: ["Batch", "Lot", "Available", "On hand", "Yard", "Status"], rows: items.map((m) => [`${m.name} (${m.id})`, m.batch, `${m.available} ${m.unit}`, `${m.quantity} ${m.unit}`, m.yard.name, m.status]), source: "Inventory · search by ID, name or lot", page: "QR Tracking" };
+    }
+  }
+  return { title: "I can’t answer that yet", summary: "I only answer a fixed set of questions from live data: low stock, overdue purchase orders, transfers awaiting approval or in transit, open inspections, supplier performance, what needs attention, or a batch ID such as PO-00001-1.", source: "No data was read" };
+}
+
+function Assistant({ onNavigate }: { onNavigate: (page: PageName) => void }) {
   const [question, setQuestion] = useState("");
-  const [asked, setAsked] = useState(false);
-  return <><PageHeader eyebrow="Offline workspace" title="AI assistant" description="Explore cached operational data using structured, reviewable answers." actions={<Badge tone="neutral"><Icon name="wifiOff" size={13}/> Offline demo</Badge>}/>
-    <div className="assistant-layout"><Card className="assistant-main"><div className="chat-intro"><span className="ai-mark large"><Icon name="sparkles" size={26}/></span><h2>Materials operations assistant</h2><p>This interface uses static example responses. It is not connected to an AI model or backend.</p></div>{asked && <div className="chat-thread"><div className="user-message">{question}</div><div className="assistant-message"><div className="answer-heading"><Icon name="sparkles"/><strong>Structured demo answer</strong><Badge tone="neutral">Cached data</Badge></div><p>Three production-critical materials are below their planning threshold. Cu-Ni Pipe has the highest schedule exposure.</p><table><thead><tr><th>Material</th><th>Available</th><th>Coverage</th><th>Action</th></tr></thead><tbody><tr><td>Cu-Ni Pipe · 80mm</td><td>18 lengths</td><td>9 days</td><td>Review reallocation</td></tr><tr><td>Welding Electrodes</td><td>22 boxes</td><td>12 days</td><td>Expedite PO</td></tr></tbody></table><small className="answer-note">Sources: Inventory snapshot 09:40 · Production plan v18. Verify before acting.</small></div></div>}<div className="composer"><Input value={question} onChange={e => setQuestion(e.target.value)} placeholder="Ask about stock, transfers or ship demand…"/><Button onClick={() => question.trim() && setAsked(true)} icon="arrow">Ask</Button></div></Card>
-    <Card className="suggested-card"><h2>Suggested questions</h2><p>Start from an operational workflow</p>{["Which materials are at risk this week?","Summarize overdue purchase orders","Show transfers awaiting my approval","Where can stock be safely reallocated?"].map(q => <button key={q} onClick={() => { setQuestion(q); setAsked(true); }}><span>{q}</span><Icon name="arrow"/></button>)}<div className="privacy-note"><Icon name="lock"/><span><strong>Local by design</strong><small>Demo answers use only static data in this app.</small></span></div></Card></div>
+  const [turns, setTurns] = useState<AssistantTurn[]>([]);
+  const [busy, setBusy] = useState(false);
+  const counter = useRef(0);
+
+  const ask = async (text: string) => {
+    const asked = text.trim();
+    if (!asked || busy) return;
+    const id = ++counter.current;
+    setTurns((t) => [...t, { id, question: asked }]);
+    setQuestion("");
+    setBusy(true);
+    try {
+      const answer = await answerQuestion(asked);
+      setTurns((t) => t.map((x) => (x.id === id ? { ...x, answer } : x)));
+    } catch (err) {
+      setTurns((t) => t.map((x) => (x.id === id ? { ...x, error: err instanceof Error ? err.message : String(err) } : x)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <><PageHeader eyebrow="Operations assistant" title="Assistant" description="Answers a fixed set of operational questions from live data. It is not an AI model." actions={<Badge tone="neutral">Rule-based</Badge>}/>
+    <div className="assistant-layout"><Card className="assistant-main">
+      {turns.length === 0 && <div className="chat-intro"><span className="ai-mark large"><Icon name="assistant" size={26}/></span><h2>Materials operations assistant</h2><p>Ask about low stock, overdue orders, transfers, inspections, supplier performance or a batch ID. Questions are matched to fixed rules and answered straight from live records; anything else gets a list of what I can answer.</p></div>}
+      {turns.length > 0 && <div className="chat-thread">{turns.map((turn) => <div key={turn.id} style={{ marginBottom: 18 }}>
+        <div className="user-message">{turn.question}</div>
+        <div className="assistant-message">
+          {!turn.answer && !turn.error && <p>Reading live data…</p>}
+          {turn.error && <><div className="answer-heading"><Icon name="warning"/><strong>Couldn’t read the data</strong></div><p>{turn.error}</p></>}
+          {turn.answer && <><div className="answer-heading"><Icon name="assistant"/><strong>{turn.answer.title}</strong><Badge tone="neutral">Live data</Badge></div>
+            <p>{turn.answer.summary}</p>
+            {!!turn.answer.rows?.length && <div className="table-scroll"><table><thead><tr>{turn.answer.columns!.map((c) => <th key={c}>{c}</th>)}</tr></thead><tbody>{turn.answer.rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody></table></div>}
+            <small className="answer-note">Source: {turn.answer.source}{turn.answer.page ? <> · <button type="button" className="link-button" onClick={() => onNavigate(turn.answer!.page!)}>Open {turn.answer.page}</button></> : null}</small></>}
+        </div>
+      </div>)}</div>}
+      <form className="composer" onSubmit={(e) => { e.preventDefault(); ask(question); }}><Input aria-label="Ask a question" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about stock, orders, transfers or inspections…" disabled={busy}/><Button type="submit" icon="arrow" disabled={busy || !question.trim()}>Ask</Button></form>
+    </Card>
+    <Card className="suggested-card"><h2>Questions I can answer</h2><p>Each one reads live records</p>{ASSISTANT_QUESTIONS.map((q) => <button key={q} onClick={() => ask(q)} disabled={busy}><span>{q}</span><Icon name="arrow"/></button>)}<div className="privacy-note"><Icon name="lock"/><span><strong>No AI model</strong><small>Questions are matched to fixed rules in your browser; answers come from the Dockyard API.</small></span></div></Card></div>
   </>;
 }
 
-function ShipsYards() {
-  return <><PageHeader eyebrow="Program allocation" title="Ships & yards" description="Review material commitments by build program and operating yard." actions={<Button icon="plus">New allocation</Button>}/><div className="entity-grid">{[
-    ["MV Calypso","Harbor North","Hull assembly","72","$6.4M","1,842"],
-    ["NS Atlas","East Basin","Outfitting","54","$4.8M","1,204"],
-    ["OSV Meridian","Dry Dock 4","Systems integration","38","$3.1M","884"],
-  ].map(s => <Card className="entity-card" key={s[0]}><div className="entity-top"><span className="ship-avatar large"><Icon name="ship" size={24}/></span><Badge tone="success">Active</Badge></div><h2>{s[0]}</h2><p>{s[1]} · {s[2]}</p><Progress value={Number(s[3])}/><div className="entity-stats"><span><strong>{s[3]}%</strong><small>Build progress</small></span><span><strong>{s[4]}</strong><small>Allocated value</small></span><span><strong>{s[5]}</strong><small>Material lines</small></span></div><Button variant="secondary">View allocation</Button></Card>)}</div></>;
+const buildTone = (status: string) =>
+  ["Launched", "Commissioned", "Launch ready"].includes(status) ? "success" as const : status === "Planning" ? "neutral" as const : "info" as const;
+
+function ShipAllocationDialog({ ship, onClose, onNavigate }: { ship: ShipProgram; onClose: () => void; onNavigate: (page: PageName) => void }) {
+  const [result, setResult] = useState<{ items: ApiMaterial[]; total: number } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    listMaterials({ skip: 0, limit: 100, ship: ship.id }, controller.signal)
+      .then(({ materials: items, total }) => setResult({ items, total }))
+      .catch((err) => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : String(err)); });
+    return () => controller.abort();
+  }, [ship.id]);
+
+  return <div className="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="ship-allocation-title">
+    <button className="dialog-scrim" onClick={onClose} aria-label="Close dialog"/>
+    <div className="dialog" style={{ width: "min(820px, 100%)" }}>
+      <div className="dialog-header">
+        <div>
+          <p className="eyebrow">Ship allocation</p>
+          <h2 id="ship-allocation-title">{ship.name}</h2>
+          <p>{ship.build_status} · {ship.build_progress}% complete · {ship.yard}</p>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog"><Icon name="close"/></button>
+      </div>
+      {error && <div className="notice" role="alert" style={{ marginTop: 18 }}><Icon name="warning"/>{error}</div>}
+      {!error && !result && <StatePanel type="loading" title="Loading allocated batches" message="Fetching batches allocated to this ship…"/>}
+      {result && result.items.length === 0 && <StatePanel type="empty" title="No batches allocated" message="Allocate a batch by editing it in Inventory and choosing this ship."/>}
+      {result && result.items.length > 0 && <div className="table-scroll" style={{ padding: "0 22px" }}><table>
+        <thead><tr><th>Batch</th><th>Stock</th><th>Location</th><th>Status</th></tr></thead>
+        <tbody>{result.items.map((m) => <tr key={m.id}>
+          <td><strong>{m.name}</strong><small>{m.id} · Lot {m.batch}</small></td>
+          <td><strong>{m.available} {m.unit} available</strong><small>{m.reserved} reserved · {m.quantity} on hand</small></td>
+          <td><strong>{m.yard.name}</strong><small>{m.location ? `Zone ${m.location.zone}, aisle ${m.location.aisle}` : "No location"}</small></td>
+          <td><Badge tone={statusTone(m.status)}>{m.status}</Badge></td>
+        </tr>)}</tbody>
+      </table></div>}
+      {result && result.total > result.items.length && <p className="muted-copy" style={{ padding: "8px 22px 0" }}>Showing {result.items.length} of {result.total} batches; filter Inventory by this ship's yard to see the rest.</p>}
+      <div className="dialog-actions">
+        <Button type="button" variant="ghost" onClick={() => { onClose(); onNavigate("Inventory"); }}>Open Inventory</Button>
+        <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
+      </div>
+    </div>
+  </div>;
+}
+
+function ShipsYards({ onNavigate }: { onNavigate: (page: PageName) => void }) {
+  const [ships, setShips] = useState<ShipProgram[] | null>(null);
+  const [shipsError, setShipsError] = useState("");
+  const [yards, setYards] = useState<YardOverview[] | null>(null);
+  const [yardsError, setYardsError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [openShip, setOpenShip] = useState<ShipProgram | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setShipsError("");
+    setYardsError("");
+    getShipPrograms(controller.signal)
+      .then(setShips)
+      .catch((err) => { if (!controller.signal.aborted) setShipsError(err instanceof Error ? err.message : String(err)); });
+    getYardOverview(controller.signal)
+      .then(setYards)
+      .catch((err) => { if (!controller.signal.aborted) setYardsError(err instanceof Error ? err.message : String(err)); });
+    return () => controller.abort();
+  }, [reloadKey]);
+
+  const retry = () => { setShips(null); setYards(null); setReloadKey((k) => k + 1); };
+  return <><PageHeader eyebrow="Program allocation" title="Ships & yards" description="Review material commitments by build program and operating yard." actions={<Button icon="plus" title="Batches are allocated to a ship by editing them in Inventory" onClick={() => onNavigate("Inventory")}>New allocation</Button>}/>
+    {shipsError ? <Card><StatePanel type="error" title="Ship programs couldn’t be loaded" message={shipsError} onRetry={retry}/></Card>
+      : !ships ? <Card><StatePanel type="loading" title="Loading ship programs" message="Fetching build programs…"/></Card>
+      : ships.length === 0 ? <Card><StatePanel type="empty" title="No ships recorded" message="Ship programs appear here once they are added to the database."/></Card>
+      : <div className="entity-grid">{ships.map((ship) => <Card className="entity-card" key={ship.id}>
+        <div className="entity-top"><span className="ship-avatar large"><Icon name="ship" size={24}/></span><Badge tone={buildTone(ship.build_status)}>{ship.build_status}</Badge></div>
+        <h2>{ship.name}</h2><p>{ship.yard}</p>
+        <Progress value={ship.build_progress}/>
+        <div className="entity-stats"><span><strong>{ship.build_progress}%</strong><small>Build progress</small></span><span><strong>{ship.allocated_batches}</strong><small>Allocated batches</small></span><span><strong>{ship.reserved_batches}</strong><small>With reserved stock</small></span></div>
+        <Button variant="secondary" onClick={() => setOpenShip(ship)}>View allocation</Button>
+      </Card>)}</div>}
+    <div style={{ marginTop: 14 }}><Card className="table-card">
+      <div className="table-toolbar"><div><strong>Yards</strong><p className="muted-copy">Storage locations, batches and ships per operating yard</p></div></div>
+      {yardsError ? <StatePanel type="error" title="Yards couldn’t be loaded" message={yardsError} onRetry={retry}/>
+        : !yards ? <StatePanel type="loading" title="Loading yards" message="Fetching yard data…"/>
+        : yards.length === 0 ? <StatePanel type="empty" title="No yards recorded" message="Yards appear here once they are added to the database."/>
+        : <div className="table-scroll"><table><thead><tr><th>Yard</th><th>Status</th><th>Storage locations</th><th>Batches</th><th>Ships</th><th>Capacity</th></tr></thead><tbody>{yards.map((y) => <tr key={y.id}>
+          <td><strong>{y.name}</strong><small>{y.location}</small></td>
+          <td><Badge tone={y.status === "Active" ? "success" : y.status === "Closed" ? "danger" : "warning"}>{y.status}</Badge></td>
+          <td><strong>{y.storage_locations}</strong></td><td><strong>{y.batches}</strong></td><td><strong>{y.ships}</strong></td>
+          <td><strong>{y.capacity.toLocaleString()}</strong><small>as recorded</small></td>
+        </tr>)}</tbody></table></div>}
+    </Card></div>
+    {openShip && <ShipAllocationDialog ship={openShip} onClose={() => setOpenShip(null)} onNavigate={onNavigate}/>}
+  </>;
 }
 
 const QUALITY_PAGE_SIZE = 25;
@@ -762,28 +1042,124 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   </>;
 }
 
+const AUDIT_PAGE_SIZE = 25;
+
+/** Stock-ledger rows use the shared ledger rule; other sources show the event's quantity. */
+function auditQuantity(e: AuditEvent) {
+  if (e.quantity === null) return "";
+  const n = e.source === "stock" ? ledgerQuantity(e.action, e.quantity, e.detail) : String(e.quantity);
+  return ` · ${n}${e.unit ? ` ${e.unit}` : ""}`;
+}
+
 function AuditLogs() {
-  return <><PageHeader eyebrow="Traceable operations" title="Audit logs" description="Immutable activity history for material, user and approval events." actions={<Button variant="secondary" icon="download">Export log</Button>}/><Card className="audit-card"><div className="table-toolbar"><Input icon="search" placeholder="Search users, actions or records…"/><div className="toolbar-filters"><Select><option>All event types</option></Select><Button variant="secondary" icon="filter">Date range</Button></div></div><div className="audit-timeline">{audits.map(a => <div className="audit-event" key={a.action}><span className="audit-dot"><Icon name="check" size={14}/></span><div><strong>{a.action}</strong><p>{a.actor} · {a.detail}</p></div><div><strong>{a.target}</strong><small>{a.time}</small></div></div>)}</div></Card></>;
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [source, setSource] = useState<AuditSource | "">("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [skip, setSkip] = useState(0);
+  const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [items, setItems] = useState<AuditEvent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  const rangeError = dateFrom && dateTo && dateFrom > dateTo ? "The start date must be on or before the end date." : "";
+
+  useEffect(() => {
+    if (rangeError) return;
+    const controller = new AbortController();
+    setState("loading");
+    listAuditEvents({ skip, limit: AUDIT_PAGE_SIZE, search, source: source || undefined, dateFrom, dateTo }, controller.signal)
+      .then(({ events, total: count }) => { setItems(events); setTotal(count); setState(events.length ? "ready" : "empty"); })
+      .catch((err) => { if (!controller.signal.aborted) { setLoadError(err instanceof Error ? err.message : String(err)); setState("error"); } });
+    return () => controller.abort();
+  }, [skip, search, source, dateFrom, dateTo, retryKey, rangeError]);
+
+  const filtered = Boolean(search || source || dateFrom || dateTo);
+  const firstShown = total === 0 ? 0 : skip + 1;
+  return <><PageHeader eyebrow="Traceable operations" title="Audit logs" description="Recorded stock, transfer, purchase-order and inspection activity, newest first." actions={<Button variant="secondary" icon="download" disabled title="Export is not available yet">Export log</Button>}/>
+    <Card className="audit-card">
+      <div className="table-toolbar">
+        <Input icon="search" aria-label="Search audit events" placeholder="Search batch, material, PO-/TR-/QI-/GR- number, actor or reason…" value={query} onChange={(e) => setQuery(e.target.value)}/>
+        <div className="toolbar-filters">
+          <Select aria-label="Filter by event type" value={source} onChange={(e) => { setSource(e.target.value as AuditSource | ""); setSkip(0); }}><option value="">All event types</option>{AUDIT_SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</Select>
+          <Input type="date" aria-label="From date" title="From date" value={dateFrom} max={dateTo || undefined} onChange={(e) => { setDateFrom(e.target.value); setSkip(0); }}/>
+          <Input type="date" aria-label="To date" title="To date" value={dateTo} min={dateFrom || undefined} onChange={(e) => { setDateTo(e.target.value); setSkip(0); }}/>
+          {filtered && <Button variant="ghost" onClick={() => { setQuery(""); setSearch(""); setSource(""); setDateFrom(""); setDateTo(""); setSkip(0); }}>Clear</Button>}
+        </div>
+      </div>
+      {rangeError && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{rangeError}</div>}
+      {!rangeError && state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
+      {!rangeError && (state !== "ready"
+        ? <StatePanel type={state} onRetry={() => setRetryKey((k) => k + 1)} title={state === "loading" ? "Loading audit events" : state === "empty" ? (filtered ? "No events match" : "No recorded events yet") : "Audit events couldn’t be loaded"} message={state === "loading" ? "Fetching recorded activity…" : state === "empty" ? (filtered ? "Try a different search, event type or date range." : "Stock movements, transfers, purchase orders and inspections appear here as they happen.") : undefined}/>
+        : <div className="audit-timeline">{items.map((e) => <div className="audit-event" key={e.key}>
+          <span className="audit-dot"><Icon name="check" size={14}/></span>
+          <div><strong>{e.source_label} · {e.action}{e.from_status && e.to_status && e.from_status !== e.to_status ? ` · ${e.from_status} → ${e.to_status}` : ""}{auditQuantity(e)}</strong>
+            <p>{[e.actor, e.subject && (e.batch ? `${e.subject} (lot ${e.batch})` : e.subject), e.reason, e.detail].filter(Boolean).join(" · ")}</p></div>
+          <div><strong className="mono">{e.record ?? "—"}</strong><small>{formatMoment(e.created_at)}</small></div>
+        </div>)}</div>)}
+      <div className="table-footer"><span>{state === "ready" && !rangeError ? `Showing ${firstShown}–${skip + items.length} of ${total} events` : `${rangeError ? 0 : total} events`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - AUDIT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading" || Boolean(rangeError)} onClick={() => setSkip(skip + AUDIT_PAGE_SIZE)}>Next</Button></div></div>
+    </Card>
+    <p className="muted-copy" style={{ marginTop: 10 }}>Supplier changes are not recorded, and inventory edits made before stock adjustments were logged do not appear. Actor names are supplied by the app and are not verified — there is no sign-in yet.</p>
+  </>;
 }
 
-function Settings() {
-  const [tab, setTab] = useState("General");
-  return <><PageHeader eyebrow="Workspace administration" title="Settings" description="Manage organization preferences, roles and integrations."/><div className="settings-layout"><Card className="settings-nav">{["General","Roles & access","Notifications","Integrations","Offline sync"].map(t => <button className={tab===t?"active":""} onClick={() => setTab(t)} key={t}><Icon name={t==="Roles & access"?"users":t==="Offline sync"?"wifiOff":"settings"}/>{t}</button>)}</Card><Card className="settings-panel"><h2>{tab}</h2><p>Configure {tab.toLowerCase()} preferences for the materials workspace.</p>{tab === "Roles & access" ? <div className="role-list">{[["Materials Admin","8 members","Full inventory and approval access"],["Yard Manager","14 members","Yard-scoped receiving and transfers"],["Quality Inspector","6 members","Inspection and certificate workflows"],["Viewer","22 members","Read-only operational access"]].map(r => <div key={r[0]}><span className="role-icon"><Icon name="users"/></span><span><strong>{r[0]}</strong><small>{r[2]}</small></span><Badge>{r[1]}</Badge><Button variant="ghost">Edit</Button></div>)}</div> : <div className="settings-form"><label><span>Organization name</span><Input defaultValue="Northstar Marine Works"/></label><label><span>Default yard</span><Select><option>Harbor North</option><option>East Basin</option></Select></label><label><span>Inventory valuation</span><Select><option>Weighted average cost</option><option>FIFO</option></Select></label><label className="toggle-row"><span><strong>Require transfer approval</strong><small>Transfers over $5,000 require a yard manager.</small></span><input type="checkbox" defaultChecked/></label><div className="notice"><Icon name="warning"/>Settings are displayed for demonstration and are not persisted.</div><Button>Save changes</Button></div>}</Card></div></>;
+const SETTINGS_TABS = ["General", "Roles & access", "Notifications", "Integrations", "Offline sync"] as const;
+
+function SettingsRow({ icon, title, detail, badge, tone = "neutral" }: { icon: IconName; title: string; detail: string; badge: string; tone?: "neutral" | "success" | "warning" | "danger" }) {
+  return <div><span className="role-icon"><Icon name={icon}/></span><span><strong>{title}</strong><small>{detail}</small></span><Badge tone={tone}>{badge}</Badge><span/></div>;
 }
 
-function CurrentPage({ page, onNavigate, materials, onMaterialsChanged }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState; onMaterialsChanged: () => void }) {
+function Settings({ apiStatus }: { apiStatus: ApiStatus }) {
+  const [tab, setTab] = useState<(typeof SETTINGS_TABS)[number]>("General");
+  const apiTone = apiStatus.state === "online" ? "success" as const : apiStatus.state === "checking" ? "neutral" as const : "danger" as const;
+  return <><PageHeader eyebrow="Workspace administration" title="Settings" description="What this workspace is running with. Settings can’t be changed from here yet."/>
+    <div className="settings-layout">
+      <Card className="settings-nav">{SETTINGS_TABS.map((t) => <button className={tab === t ? "active" : ""} onClick={() => setTab(t)} key={t}><Icon name={t === "Roles & access" ? "users" : t === "Offline sync" ? "wifiOff" : "settings"}/>{t}</button>)}</Card>
+      <Card className="settings-panel"><h2>{tab}</h2>
+        {tab === "General" && <><p>Read from the running system. There is no settings storage yet, so nothing here can be saved.</p><div className="role-list">
+          <SettingsRow icon="users" title={`${CURRENT_USER.name} · ${CURRENT_USER.role}`} detail="Prototype identity used as the actor on every change — there is no sign-in yet" badge="Not verified" tone="warning"/>
+          <SettingsRow icon="settings" title="API address" detail={API_BASE_URL} badge={apiStatusLabel(apiStatus)} tone={apiTone}/>
+          <SettingsRow icon="settings" title="API version" detail={apiStatus.version ? `v${apiStatus.version}` : "Unknown until the API responds"} badge={apiStatus.checkedAt ? `Checked ${checkedTime(apiStatus.checkedAt)}` : "Checking"}/>
+        </div></>}
+        {tab === "Roles & access" && <><p>Access control isn’t implemented yet.</p><div className="role-list">
+          <SettingsRow icon="lock" title="No sign-in or roles" detail={`Everyone can use every page. Changes are recorded under the name ${CURRENT_USER.name}; names are not verified.`} badge="Not available" tone="warning"/>
+        </div></>}
+        {tab === "Notifications" && <><p>Notifications aren’t implemented yet. Pending work is shown on the Dashboard, Movements, Procurement and Quality pages instead.</p><div className="role-list">
+          <SettingsRow icon="warning" title="Email and in-app notifications" detail="Nothing is sent or queued" badge="Not available" tone="warning"/>
+        </div></>}
+        {tab === "Integrations" && <><p>Connections this workspace uses.</p><div className="role-list">
+          <SettingsRow icon="settings" title="Dockyard REST API" detail={API_BASE_URL} badge={apiStatusLabel(apiStatus)} tone={apiTone}/>
+          <SettingsRow icon="sparkles" title="AI model" detail="None connected — the Assistant and Analytics pages use fixed rules over live data" badge="Not connected"/>
+          <SettingsRow icon="scan" title="QR scanner and label printer" detail="Not connected — QR Tracking supports manual lookup only" badge="Not connected"/>
+        </div></>}
+        {tab === "Offline sync" && <><p>Offline use isn’t available.</p><div className="role-list">
+          <SettingsRow icon="wifiOff" title="Offline cache and sync" detail="The app needs a live connection to the API; nothing is cached locally or synced later" badge="Not available" tone="warning"/>
+        </div></>}
+      </Card>
+    </div>
+  </>;
+}
+
+function CurrentPage({ page, onNavigate, materials, onMaterialsChanged, apiStatus, searchRequest }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState; onMaterialsChanged: () => void; apiStatus: ApiStatus; searchRequest: { text: string; n: number } | null }) {
   switch (page) {
     case "Dashboard": return <Dashboard onNavigate={onNavigate} materials={materials}/>;
-    case "Inventory": return <Inventory onMaterialsChanged={onMaterialsChanged}/>;
+    case "Inventory": return <Inventory onMaterialsChanged={onMaterialsChanged} searchRequest={searchRequest}/>;
     case "Movements": return <Movements/>;
     case "QR Tracking": return <QRTracking/>;
-    case "Ships & Yards": return <ShipsYards/>;
+    case "Ships & Yards": return <ShipsYards onNavigate={onNavigate}/>;
     case "Procurement": return <Procurement onMaterialsChanged={onMaterialsChanged}/>;
-    case "AI Analytics": return <Analytics/>;
-    case "AI Assistant": return <Assistant/>;
+    case "Analytics": return <Analytics onNavigate={onNavigate}/>;
+    case "Assistant": return <Assistant onNavigate={onNavigate}/>;
     case "Quality": return <Quality onMaterialsChanged={onMaterialsChanged}/>;
     case "Audit Logs": return <AuditLogs/>;
-    case "Settings": return <Settings/>;
+    case "Settings": return <Settings apiStatus={apiStatus}/>;
   }
 }
 
@@ -793,6 +1169,20 @@ export default function App() {
   const [materials, setMaterials] = useState<MaterialSummaryState>({ data: null, error: "" });
   const [materialsVersion, setMaterialsVersion] = useState(0);
   const onMaterialsChanged = useCallback(() => setMaterialsVersion((v) => v + 1), []);
+  const [apiStatus, setApiStatus] = useState<ApiStatus>({ state: "checking" });
+  const [searchRequest, setSearchRequest] = useState<{ text: string; n: number } | null>(null);
+  const onSearch = useCallback((text: string) => { setSearchRequest((r) => ({ text, n: (r?.n ?? 0) + 1 })); setPage("Inventory"); }, []);
+
+  // A real connection check every minute, shown in the top bar, sidebar and Settings.
+  useEffect(() => {
+    let alive = true;
+    const check = () => getHealth()
+      .then((h) => { if (alive) setApiStatus({ state: h.database === "connected" ? "online" : "degraded", version: h.version, checkedAt: new Date().toISOString() }); })
+      .catch(() => { if (alive) setApiStatus((prev) => ({ state: "offline", version: prev.version, checkedAt: new Date().toISOString() })); });
+    check();
+    const id = window.setInterval(check, 60_000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
 
   // One summary feeds the Dashboard cards and the sidebar badge; refreshed on navigation and after Inventory changes.
   useEffect(() => {
@@ -803,5 +1193,5 @@ export default function App() {
     return () => controller.abort();
   }, [page, materialsVersion]);
 
-  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged}/></main></div></div>;
+  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null} apiStatus={apiStatus}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage} onSearch={onSearch} apiStatus={apiStatus}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged} apiStatus={apiStatus} searchRequest={searchRequest}/></main></div></div>;
 }

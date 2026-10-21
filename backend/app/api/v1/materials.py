@@ -30,6 +30,7 @@ def list_materials(
     search: str = Query("", description="Search by ID, name, or batch"),
     category: str = Query("", description="Filter by category ID"),
     yard: str = Query("", description="Filter by yard ID"),
+    ship: str = Query("", description="Filter by allocated ship ID"),
     status_filter: MaterialStatusEnum = Query(None, description="Filter by status"),
     db: Session = Depends(get_db),
 ):
@@ -40,6 +41,7 @@ def list_materials(
     - search: Search materials by ID, name, or batch
     - category: Filter by category ID
     - yard: Filter by yard ID
+    - ship: Filter by allocated ship ID
     - status_filter: Filter by material status
     """
     query = db.query(Material)
@@ -57,6 +59,9 @@ def list_materials(
 
     if yard:
         query = query.filter(Material.yard_id == yard)
+
+    if ship:
+        query = query.filter(Material.ship_id == ship)
 
     if status_filter:
         query = query.filter(Material.status == status_filter)
@@ -158,7 +163,7 @@ def create_material(
     ).first()
     if not category:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Category '{material_data.category_id}' does not exist"
         )
 
@@ -166,7 +171,7 @@ def create_material(
     yard = db.query(Yard).filter(Yard.id == material_data.yard_id).first()
     if not yard:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Yard '{material_data.yard_id}' does not exist"
         )
 
@@ -177,12 +182,12 @@ def create_material(
         ).first()
         if not location:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Storage location '{material_data.location_id}' does not exist"
             )
         if str(location.yard_id) != material_data.yard_id:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Storage location '{material_data.location_id}' does not belong to yard '{material_data.yard_id}'"
             )
 
@@ -191,20 +196,29 @@ def create_material(
         ship = db.query(Ship).filter(Ship.id == material_data.ship_id).first()
         if not ship:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Ship '{material_data.ship_id}' does not exist"
             )
         if str(ship.yard_id) != material_data.yard_id:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Ship '{material_data.ship_id}' does not belong to yard '{material_data.yard_id}'"
             )
 
-    # Create material
-    material = Material(**material_data.model_dump())
+    if material_data.quantity > 0 and not material_data.actor:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="actor is required to create a batch with stock: its opening balance is recorded in the stock ledger"
+        )
 
+    material = Material(**material_data.model_dump(exclude={"actor", "stock_reason"}))
+
+    # The batch and its opening-balance ledger entry are committed together or not at all.
     try:
         db.add(material)
+        if material.quantity > 0:
+            db.flush()
+            db.add(material_service.opening_balance(material, material_data.actor, material_data.stock_reason))
         db.commit()
         db.refresh(material)
     except IntegrityError as e:
@@ -254,6 +268,8 @@ def update_material(
 
     update_data = material_update.model_dump(exclude_unset=True)
     expected_version = update_data.pop("expected_version", None)
+    actor = update_data.pop("actor", None)
+    stock_reason = update_data.pop("stock_reason", None)
     if expected_version is not None and expected_version != material.version:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -268,7 +284,7 @@ def update_material(
         ).first()
         if not category:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Category '{update_data['category_id']}' does not exist"
             )
 
@@ -281,7 +297,7 @@ def update_material(
         yard = db.query(Yard).filter(Yard.id == yard_id).first()
         if not yard:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Yard '{yard_id}' does not exist"
             )
 
@@ -290,12 +306,12 @@ def update_material(
         location = db.query(StorageLocation).filter(StorageLocation.id == location_id).first()
         if not location:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Storage location '{location_id}' does not exist"
             )
         if str(location.yard_id) != yard_id:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Storage location '{location_id}' does not belong to yard '{yard_id}'"
             )
 
@@ -303,12 +319,12 @@ def update_material(
         ship = db.query(Ship).filter(Ship.id == ship_id).first()
         if not ship:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Ship '{ship_id}' does not exist"
             )
         if str(ship.yard_id) != yard_id:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Ship '{ship_id}' does not belong to yard '{yard_id}'"
             )
 
@@ -319,7 +335,7 @@ def update_material(
 
     if available + reserved > quantity:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"available ({available}) + reserved ({reserved}) "
                    f"cannot exceed quantity ({quantity})"
         )
@@ -335,16 +351,34 @@ def update_material(
             )
         if available + reserved > quantity - held:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"available ({available}) + reserved ({reserved}) cannot exceed the {quantity - held} "
                        f"{material.unit} not on inspection hold (quantity {quantity}, {held} held)"
             )
 
+    # Every change to a stock figure is recorded in the ledger, so it needs an actor and a reason.
+    before = material_service.stock_figures(material)
+    stock_changed = any(update_data.get(f, before[f]) != before[f] for f in material_service.STOCK_FIELDS)
+    if stock_changed and not actor:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="actor is required when on-hand, available or reserved quantities change"
+        )
+    if stock_changed and not stock_reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A reason is required when on-hand, available or reserved quantities change; "
+                   "it is recorded in the stock ledger"
+        )
+
+    # The material change and its ADJUSTMENT ledger entry are committed together or not at all.
     try:
         for field, value in update_data.items():
             setattr(material, field, value)
         if update_data:
             material.version += 1
+        if stock_changed:
+            db.add(material_service.stock_adjustment(material, before, actor, stock_reason))
         db.commit()
         db.refresh(material)
     except IntegrityError:

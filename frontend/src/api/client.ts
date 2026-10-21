@@ -23,17 +23,29 @@ function describeDetail(detail: unknown): string | null {
   return null;
 }
 
+const RETRY_DELAY_MS = 300;
+
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", ...init.headers },
-    });
-  } catch (err) {
-    if (init.signal?.aborted) throw err;
-    throw new ApiError(`Cannot reach the API at ${API_BASE_URL}. Check that the backend is running.`, 0);
+  // A read that fails before reaching the server (a dropped connection, not an abort or an HTTP error) is
+  // retried once; reads are safe to repeat. Writes are never retried here, so they cannot be duplicated.
+  const attempts = (init.method ?? "GET").toUpperCase() === "GET" ? 2 : 1;
+  let response: Response | undefined;
+  for (let attempt = 1; !response; attempt++) {
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        ...init,
+        headers: { "Content-Type": "application/json", ...init.headers },
+      });
+    } catch (err) {
+      if (init.signal?.aborted) throw err;
+      if (attempt >= attempts) {
+        throw new ApiError(`Cannot reach the API at ${API_BASE_URL}. Check that the backend is running.`, 0);
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, RETRY_DELAY_MS));
+      if (init.signal?.aborted) throw err;
+    }
   }
+  if (!response) throw new ApiError(`Cannot reach the API at ${API_BASE_URL}.`, 0);  // unreachable; narrows the type
 
   const body = await response.json().catch(() => null);
   if (!response.ok) {

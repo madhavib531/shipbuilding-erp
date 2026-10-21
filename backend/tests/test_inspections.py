@@ -248,8 +248,10 @@ class TestHeldStockIsExcluded:
         hid = hold_of(held(client, po))["id"]
         decide(client, hid, "release", quantity=1)  # 1 available, 9 held
         v = material(client, "H-1")["version"]
-        r = client.patch("/api/v1/materials/H-1", json={**change, "expected_version": v})
+        r = client.patch("/api/v1/materials/H-1", json={**change, "expected_version": v, "actor": "QA", "stock_reason": "Count correction"})
         assert r.status_code == code, r.text
+        if code != 200:
+            assert "inspection hold" in r.json()["detail"], "the hold guard, not the reason check, must refuse it"
         assert material(client, "H-1")["held_quantity"] == 9
 
     def test_inventory_edit_cannot_drop_quantity_below_held(self, client, world):

@@ -37,3 +37,21 @@ def test_materials_list_endpoint(client):
     data = response.json()
     assert data["status"] == "success"
     assert "data" in data
+
+
+def test_health_hides_database_error_details(client):
+    from app.database import get_db
+    from app.main import app
+
+    class FailingSession:
+        def execute(self, *args, **kwargs):
+            raise RuntimeError('connection to server at "db.internal", port 5432 failed: password authentication failed for user "secret_user"')
+
+    previous = app.dependency_overrides[get_db]
+    app.dependency_overrides[get_db] = lambda: FailingSession()
+    try:
+        data = client.get("/health").json()
+    finally:
+        app.dependency_overrides[get_db] = previous
+    assert data["database"] == "unavailable"
+    assert "secret_user" not in str(data) and "db.internal" not in str(data)

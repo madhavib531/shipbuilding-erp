@@ -49,6 +49,7 @@ class TestMaterialsCRUD:
                 "reserved": 20,
                 "unit": "units",
                 "yard_id": "YARD-1",
+                "actor": "Maya Chen",
             }
         )
         assert response.status_code == status.HTTP_201_CREATED
@@ -115,7 +116,7 @@ class TestMaterialsCRUD:
                 "yard_id": "YARD-1",
             }
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         # Detail is a list of errors from Pydantic validation
         errors = response.json()["detail"]
         assert any("cannot exceed" in str(err.get("msg", "")) for err in errors)

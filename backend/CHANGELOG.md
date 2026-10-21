@@ -1,5 +1,51 @@
 # Changelog — Dockyard Materials Command Backend
 
+## [Unreleased] — Project completion: live pages, rule-based analytics, hardening
+
+### Added
+- `GET /api/v1/dashboard/yards` and a `ship` filter on `GET /api/v1/materials` (Ships & Yards page).
+- `GET /api/v1/analytics/overview`: stock by category, batch record age, supplier delivery performance,
+  transfer lead times and shortages, inspection outcomes and rule-based attention flags, all computed
+  from stored records (no AI model; ratios are null when there is nothing to divide by).
+- `scripts/run_pg_tests.py`: runs every PostgreSQL-only test against a separate test database.
+
+### Changed
+- `DATABASE_URL` is now required; the backend no longer falls back silently to a local SQLite file.
+- `/health` reports `database: "unavailable"` on failure and logs the error instead of returning it.
+- Purchase-order `approved_at` uses the database clock, like every other timestamp.
+- Uses Starlette's `HTTP_422_UNPROCESSABLE_CONTENT` (the old constant is deprecated).
+
+## [Unreleased] — R1: Stock adjustment audit trail and audit feed
+
+### Added
+- Manual stock changes are recorded: creating a batch with stock writes an opening-balance ADJUSTMENT
+  (`+n`); a PATCH that changes on-hand, available or reserved writes one signed ADJUSTMENT (`+n`, `-n`,
+  or `0` when only available/reserved moved) whose reason lists each before→after value. `actor` and
+  `stock_reason` are required for such changes; the change and its entry commit atomically.
+- `GET /api/v1/audit-events`: one paginated, filterable feed over the stock ledger, transfer,
+  purchase-order and inspection events (UNION ALL with explicit types; stable ordering).
+
+## [Unreleased] — Dashboard, QR tracking and goods-receipt fix
+
+### Added
+- `GET /api/v1/dashboard/movements` and `GET /api/v1/dashboard/ships`.
+- `GET /api/v1/materials/{id}/transactions`: a batch's ledger history.
+
+### Fixed
+- Concurrent duplicate goods receipts with the same Idempotency-Key now replay the original receipt
+  instead of returning 409 after the first one commits.
+
+## [Unreleased] — Procurement M2–M5: purchase orders, goods receipts, inspection holds
+
+### Added
+- Purchase orders (migration `8b06997ed8a5`): draft, approve, reopen, cancel, close-short; lines with
+  `Numeric(14,4)` prices, one currency per order; optimistic versions and Idempotency-Key on create.
+- Goods receipts (migration `6e07101bb214`): accepted quantities enter stock with a RECEIPT ledger row;
+  rejected quantities never enter stock and stay owed; no over-delivery.
+- Inspection holds (migration `f3263eb479ec`): receipts can hold goods in a new batch; release makes
+  them available, rejection returns or scraps them and re-opens the order line; holds cannot be
+  bypassed through inventory edits or transfers.
+
 ## [Unreleased] — Procurement M1: Supplier API
 
 ### Added

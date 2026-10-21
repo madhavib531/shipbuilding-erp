@@ -48,7 +48,7 @@ export type ReferenceData = {
   ships: { id: string; name: string; yard_id: string }[];
 };
 
-export type MaterialQuery = { skip: number; limit: number; search?: string; category?: string; yard?: string; status?: MaterialStatus };
+export type MaterialQuery = { skip: number; limit: number; search?: string; category?: string; yard?: string; ship?: string; status?: MaterialStatus };
 
 /** Batch counts; "Low stock" is the manually assigned status, not a computed threshold. */
 export type MaterialSummary = {
@@ -68,6 +68,7 @@ export async function listMaterials(query: MaterialQuery, signal?: AbortSignal) 
   if (query.search) params.set("search", query.search);
   if (query.category) params.set("category", query.category);
   if (query.yard) params.set("yard", query.yard);
+  if (query.ship) params.set("ship", query.ship);
   if (query.status) params.set("status_filter", query.status);
   const res = await apiRequest<Envelope<{ materials: ApiMaterial[]; total: number }>>(`/api/v1/materials?${params}`, { signal });
   return res.data;
@@ -81,11 +82,14 @@ export async function getMaterial(id: string, signal?: AbortSignal) {
   return (await apiRequest<Envelope<ApiMaterial>>(`/api/v1/materials/${encodeURIComponent(id)}`, { signal })).data;
 }
 
-export async function createMaterial(input: MaterialInput & { id: string }) {
+/** Who made a stock change and why; recorded on the ADJUSTMENT ledger entry. */
+export type StockNote = { actor?: string; stock_reason?: string | null };
+
+export async function createMaterial(input: MaterialInput & { id: string } & StockNote) {
   return (await apiRequest<Envelope<ApiMaterial>>("/api/v1/materials", { method: "POST", body: JSON.stringify(input) })).data;
 }
 
-export async function updateMaterial(id: string, changes: Partial<MaterialInput>, expectedVersion: number) {
+export async function updateMaterial(id: string, changes: Partial<MaterialInput> & StockNote, expectedVersion: number) {
   const body = { ...changes, expected_version: expectedVersion };
   return (await apiRequest<Envelope<ApiMaterial>>(`/api/v1/materials/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })).data;
 }

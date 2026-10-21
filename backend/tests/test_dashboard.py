@@ -76,3 +76,28 @@ def test_ships_report_build_status_and_allocated_batches(client, db, refs):
         {"id": "S2", "name": "Calypso", "yard": "Yard 1", "build_status": "Planning", "build_progress": 0,
          "allocated_batches": 0, "reserved_batches": 0},
     ]
+
+
+def test_yards_count_locations_batches_and_ships(client, db, refs):
+    from app.models.facility import StorageLocation, YardStatusEnum
+    db.add_all([Yard(id="Y2", name="Empty yard", location="b", capacity=5.0, status=YardStatusEnum.MAINTENANCE)])
+    db.commit()
+    db.add(StorageLocation(id="L1", yard_id="Y1", zone="A", aisle="1", capacity=10))
+    db.commit()
+    yards = client.get("/api/v1/dashboard/yards").json()["data"]["yards"]
+    assert yards == [
+        {"id": "Y2", "name": "Empty yard", "location": "b", "status": "Maintenance", "capacity": 5.0,
+         "storage_locations": 0, "batches": 0, "ships": 0},
+        {"id": "Y1", "name": "Yard 1", "location": "a", "status": "Active", "capacity": 1.0,
+         "storage_locations": 1, "batches": 1, "ships": 2},
+    ]
+
+
+def test_materials_can_be_filtered_by_allocated_ship(client, db, refs):
+    db.add(Material(id="A1", name="a", category_id="C", batch="B", unit="u", quantity=1, available=1, reserved=0,
+                    yard_id="Y1", ship_id="S1"))
+    db.commit()
+    ids = lambda ship: [m["id"] for m in client.get("/api/v1/materials", params={"ship": ship}).json()["data"]["materials"]]  # noqa: E731
+    assert ids("S1") == ["A1"]
+    assert ids("S2") == []
+    assert sorted(ids("")) == ["A1", "M"]

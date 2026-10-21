@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
-from app.models.facility import Yard
+from app.models.facility import StorageLocation, Yard
 from app.models.material import Material
 from app.models.program import Ship
 from app.models.transaction import MaterialTransaction, TransactionType as T
@@ -66,4 +66,26 @@ def ships(db: Session) -> list[dict]:
         {"id": s.id, "name": s.name, "yard": yard_name, "build_status": s.build_status.value,
          "build_progress": s.build_progress, "allocated_batches": batches, "reserved_batches": reserved}
         for s, yard_name, batches, reserved in rows
+    ]
+
+
+def yards(db: Session) -> list[dict]:
+    """Every yard with its storage locations, batches and ships counted."""
+    def per_yard(column, key):
+        return select(key.label("yard_id"), func.count(column).label("n")).group_by(key).subquery()
+
+    locations = per_yard(StorageLocation.id, StorageLocation.yard_id)
+    batches = per_yard(Material.id, Material.yard_id)
+    ship_rows = per_yard(Ship.id, Ship.yard_id)
+    rows = db.execute(
+        select(Yard, func.coalesce(locations.c.n, 0), func.coalesce(batches.c.n, 0), func.coalesce(ship_rows.c.n, 0))
+        .outerjoin(locations, locations.c.yard_id == Yard.id)
+        .outerjoin(batches, batches.c.yard_id == Yard.id)
+        .outerjoin(ship_rows, ship_rows.c.yard_id == Yard.id)
+        .order_by(Yard.name)
+    ).all()
+    return [
+        {"id": y.id, "name": y.name, "location": y.location, "status": y.status.value, "capacity": y.capacity,
+         "storage_locations": n_locations, "batches": n_batches, "ships": n_ships}
+        for y, n_locations, n_batches, n_ships in rows
     ]

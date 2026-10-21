@@ -20,3 +20,9 @@ def stock_movements(months: int = Query(6, ge=1, le=24), db: Session = Depends(g
 def ship_programs(db: Session = Depends(get_db)):
     """Ships with build status and the number of batches allocated to each."""
     return SuccessResponse(message="Ship programs retrieved successfully", data={"ships": service.ships(db)})
+
+
+@router.get("/yards", response_model=SuccessResponse)
+def yard_overview(db: Session = Depends(get_db)):
+    """Yards with their storage locations, batches and ships counted."""
+    return SuccessResponse(message="Yards retrieved successfully", data={"yards": service.yards(db)})

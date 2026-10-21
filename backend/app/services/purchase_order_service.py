@@ -8,7 +8,7 @@ status, writes an audit event and commits once, so concurrent or stale requests 
 import hashlib
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import exists, func, or_, select
@@ -291,7 +291,7 @@ def approve(db: Session, order_id: int, data: PurchaseOrderAction) -> None:
         raise InvalidInputError(f"{_label(order.id)} cannot be approved: " + "; ".join(problems))
     order.status = S.APPROVED
     order.approved_by = data.actor
-    order.approved_at = datetime.now()
+    order.approved_at = func.now()  # the database clock, like every other timestamp
     order.version += 1
     _event(db, order, "approved", previous, data.actor, data.reason)
     db.commit()

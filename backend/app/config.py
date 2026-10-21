@@ -10,8 +10,9 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = True
 
-    # Database
-    database_url: str = "sqlite:///./dockyard_materials.db"
+    # Database. Required: the backend refuses to start without it rather than silently using a local
+    # SQLite file. Any SQLAlchemy URL works, including sqlite:///... when chosen explicitly.
+    database_url: str
 
     # CORS
     cors_origins: list[str] = [

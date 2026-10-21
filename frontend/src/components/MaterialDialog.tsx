@@ -10,6 +10,7 @@ import {
   type MaterialStatus,
   type ReferenceData,
 } from "../api/materials";
+import { CURRENT_USER } from "../currentUser";
 
 type FormState = {
   id: string; name: string; category_id: string; batch: string; unit: string; status: MaterialStatus;
@@ -47,8 +48,13 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
 }) {
   const editing = Boolean(material);
   const [form, setForm] = useState<FormState>(() => fromMaterial(material));
+  const [stockReason, setStockReason] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // A change to any stock figure is recorded in the ledger as an ADJUSTMENT and needs a reason.
+  const stockChanged = Boolean(material) && (["quantity", "available", "reserved"] as const)
+    .some((k) => form[k].trim() !== "" && Number(form[k]) !== material![k]);
 
   const locations = useMemo(() => refs?.locations.filter((l) => l.yard_id === form.yard_id) ?? [], [refs, form.yard_id]);
   const ships = useMemo(() => refs?.ships.filter((s) => s.yard_id === form.yard_id) ?? [], [refs, form.yard_id]);
@@ -66,6 +72,7 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
     if (!editing && !form.id.trim()) return setError("Material ID is required.");
     const input = toInput(form);
     if (typeof input === "string") return setError(input);
+    if (stockChanged && !stockReason.trim()) return setError("Give a reason for the stock change — it is recorded in the stock ledger.");
     setBusy(true);
     setError("");
     try {
@@ -73,10 +80,10 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         const original = toInput(fromMaterial(material)) as MaterialInput;
         const changes = Object.fromEntries(Object.entries(input).filter(([k, v]) => original[k as keyof MaterialInput] !== v));
         if (Object.keys(changes).length === 0) return onClose();
-        await updateMaterial(material.id, changes, material.version);
+        await updateMaterial(material.id, stockChanged ? { ...changes, actor: CURRENT_USER.name, stock_reason: stockReason.trim() } : changes, material.version);
         onDone(`Material ${material.id} updated`);
       } else {
-        const created = await createMaterial({ id: form.id.trim(), ...input });
+        const created = await createMaterial({ id: form.id.trim(), ...input, actor: CURRENT_USER.name, stock_reason: stockReason.trim() || null });
         onDone(`Material ${created.id} created`);
       }
     } catch (err) {
@@ -127,6 +134,9 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         <label><span>Yard</span><Select name="yard_id" value={form.yard_id} onChange={(e) => setYard(e.target.value)} disabled={formDisabled}><option value="">Select yard</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select></label>
         <label><span>Storage location</span><Select name="location_id" value={form.location_id} onChange={(e) => set("location_id", e.target.value)} disabled={formDisabled || !form.yard_id}><option value="">No location</option>{locations.map((l) => <option key={l.id} value={l.id}>Zone {l.zone} · Aisle {l.aisle}{l.bin ? ` · Bin ${l.bin}` : ""}</option>)}</Select></label>
         <label><span>Allocated ship</span><Select name="ship_id" value={form.ship_id} onChange={(e) => set("ship_id", e.target.value)} disabled={formDisabled || !form.yard_id}><option value="">Unassigned</option>{ships.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></label>
+        {stockChanged && <label style={{ gridColumn: "1 / -1" }}><span>Reason for stock change (required)</span><Input name="stock_reason" placeholder="e.g. Cycle count, damaged in storage, reserved for NS Atlas" value={stockReason} onChange={(e) => setStockReason(e.target.value)} maxLength={500} disabled={formDisabled}/></label>}
+        {stockChanged && <p className="muted-copy" style={{ gridColumn: "1 / -1" }}>Saved as a stock adjustment under the name {CURRENT_USER.name} (not verified — there is no sign-in yet), with each figure’s before and after value.</p>}
+        {!editing && Number(form.quantity) > 0 && <label style={{ gridColumn: "1 / -1" }}><span>Opening balance note (optional)</span><Input name="stock_reason" placeholder="e.g. Migrated from paper stock card" value={stockReason} onChange={(e) => setStockReason(e.target.value)} maxLength={500} disabled={formDisabled}/></label>}
       </div>
       {held > 0 && <div className="notice"><Icon name="warning"/>{held} {material!.unit} of this batch are on inspection hold. Available plus reserved cannot exceed the {material!.quantity - held} {material!.unit} not on hold; release or reject held stock on the Quality page.</div>}
       {(error || refsError) && <div className="notice" role="alert"><Icon name="warning"/>{error || refsError}</div>}

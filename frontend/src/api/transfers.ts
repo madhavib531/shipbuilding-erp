@@ -80,8 +80,8 @@ const path = (id: number, action?: string) => `/api/v1/transfers/${id}${action ?
 const post = async (url: string, body: object, headers?: Record<string, string>) =>
   (await apiRequest<Envelope<Transfer>>(url, { method: "POST", body: JSON.stringify({ actor: CURRENT_USER.name, ...body }), headers })).data;
 
-export async function listTransfers(statuses: TransferStatus[], signal?: AbortSignal) {
-  const params = new URLSearchParams({ limit: "100" });
+export async function listTransfers(statuses: TransferStatus[], page: { skip: number; limit: number }, signal?: AbortSignal) {
+  const params = new URLSearchParams({ skip: String(page.skip), limit: String(page.limit) });
   statuses.forEach((s) => params.append("status", s));
   return (await apiRequest<Envelope<{ transfers: Transfer[]; total: number }>>(`/api/v1/transfers?${params}`, { signal })).data;
 }

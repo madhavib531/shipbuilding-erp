@@ -37,7 +37,7 @@ def material(db, refs):
 def payload(**over):
     body = {
         "id": "NEW", "name": "New", "category_id": "STEEL", "batch": "B", "quantity": 10,
-        "available": 10, "reserved": 0, "unit": "units", "yard_id": "Y1",
+        "available": 10, "reserved": 0, "unit": "units", "yard_id": "Y1", "actor": "Maya Chen",
     }
     body.update(over)
     return body
@@ -92,7 +92,7 @@ class TestCreateRelationships:
 
 class TestPartialUpdate:
     def test_update_quantity_and_available_uses_stored_reserved(self, client, material):
-        r = client.patch("/api/v1/materials/M1", json={"quantity": 100, "available": 60})
+        r = client.patch("/api/v1/materials/M1", json={"quantity": 100, "available": 60, "actor": "Maya Chen", "stock_reason": "Cycle count"})
         assert r.status_code == 200, r.text
         assert r.json()["data"]["available"] == 60
         assert r.json()["data"]["reserved"] == 20
