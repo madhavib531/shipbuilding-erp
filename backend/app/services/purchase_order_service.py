@@ -21,7 +21,9 @@ from app.models.material import MaterialCategory
 from app.models.purchase_order import (
     OPEN_PURCHASE_ORDER_STATUSES, PurchaseOrder, PurchaseOrderEvent, PurchaseOrderLine, PurchaseOrderStatus as S,
 )
+from app.models.facility import Yard
 from app.models.supplier import Supplier, SupplierStatusEnum
+from app.services import currency_service
 from app.schemas.purchase_order import (
     PurchaseOrderAction, PurchaseOrderCreate, PurchaseOrderLineIn, PurchaseOrderReasonAction, PurchaseOrderUpdate,
 )
@@ -31,6 +33,7 @@ _PO_NUMBER = re.compile(r"^\s*(?:PO-?)?0*(\d{1,9})\s*$", re.IGNORECASE)
 
 _LIST_OPTIONS = (
     selectinload(PurchaseOrder.supplier),
+    selectinload(PurchaseOrder.delivery_yard),
     selectinload(PurchaseOrder.lines).selectinload(PurchaseOrderLine.category),
 )
 _DETAIL_OPTIONS = _LIST_OPTIONS + (
@@ -57,8 +60,10 @@ def get_order(db: Session, order_id: int) -> PurchaseOrder:
 
 
 def list_orders(db: Session, statuses: list[S], supplier_id: str, search: str, overdue: bool,
-                skip: int, limit: int) -> tuple[int, list[PurchaseOrder]]:
+                skip: int, limit: int, yard: str = "") -> tuple[int, list[PurchaseOrder]]:
     query = select(PurchaseOrder)
+    if yard:
+        query = query.where(PurchaseOrder.delivery_yard_id == yard)
     if statuses:
         query = query.where(PurchaseOrder.status.in_(statuses))
     if supplier_id:
@@ -85,19 +90,21 @@ def list_orders(db: Session, statuses: list[S], supplier_id: str, search: str, o
     return total, items
 
 
-def summary(db: Session) -> dict:
+def summary(db: Session, yard: str = "") -> dict:
+    """Order counts and open value; `yard` limits it to orders delivered to that yard."""
     today = date.today()
-    counts = dict(db.execute(select(PurchaseOrder.status, func.count()).group_by(PurchaseOrder.status)).all())
+    in_yard = [PurchaseOrder.delivery_yard_id == yard] if yard else []
+    counts = dict(db.execute(select(PurchaseOrder.status, func.count()).where(*in_yard).group_by(PurchaseOrder.status)).all())
     is_open = PurchaseOrder.status.in_(OPEN_PURCHASE_ORDER_STATUSES)
-    overdue = db.scalar(select(func.count()).where(is_open, PurchaseOrder.expected_delivery_date < today))
-    due_this_week = db.scalar(select(func.count()).where(
-        is_open, PurchaseOrder.expected_delivery_date.between(today, today + timedelta(days=6))))
+    overdue = db.scalar(select(func.count()).select_from(PurchaseOrder).where(is_open, PurchaseOrder.expected_delivery_date < today, *in_yard))
+    due_this_week = db.scalar(select(func.count()).select_from(PurchaseOrder).where(
+        is_open, PurchaseOrder.expected_delivery_date.between(today, today + timedelta(days=6)), *in_yard))
     outstanding = (PurchaseOrderLine.ordered_quantity - PurchaseOrderLine.received_quantity
                    - PurchaseOrderLine.cancelled_quantity)
     open_value = db.execute(
         select(PurchaseOrderLine.currency, func.sum(outstanding * PurchaseOrderLine.unit_price))
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-        .where(is_open).group_by(PurchaseOrderLine.currency).order_by(PurchaseOrderLine.currency)
+        .where(is_open, *in_yard).group_by(PurchaseOrderLine.currency).order_by(PurchaseOrderLine.currency)
     ).all()
     return {
         "by_status": {s.value: counts.get(s, 0) for s in S},
@@ -109,6 +116,7 @@ def summary(db: Session) -> dict:
             {"currency": currency, "amount": str(Decimal(str(amount or 0)).quantize(Decimal("0.0001")))}
             for currency, amount in open_value
         ],
+        "open_value_base": currency_service.to_base(db, [{"currency": c, "amount": a or 0} for c, a in open_value]),
     }
 
 
@@ -122,6 +130,11 @@ def _event(db: Session, order: PurchaseOrder, action: str, from_status: S | None
         purchase_order_id=order.id, action=action, from_status=from_status.value if from_status else None,
         to_status=order.status.value, actor=actor, reason=reason, version=order.version, changes=changes,
     ))
+
+
+def _require_yard(db: Session, yard_id: str | None) -> None:
+    if yard_id is not None and db.get(Yard, yard_id) is None:
+        raise InvalidInputError(f"Yard '{yard_id}' does not exist")
 
 
 def _require_eligible_supplier(db: Session, supplier_id: str) -> Supplier:
@@ -191,9 +204,11 @@ def create_order(db: Session, data: PurchaseOrderCreate, idempotency_key: str | 
         return previous, False
 
     _require_eligible_supplier(db, data.supplier_id)
+    _require_yard(db, data.delivery_yard_id)
     _validate_lines(db, data.lines)
     order = PurchaseOrder(
         supplier_id=data.supplier_id, status=S.DRAFT, expected_delivery_date=data.expected_delivery_date,
+        delivery_yard_id=data.delivery_yard_id,
         notes=data.notes, created_by=data.actor, version=1, idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
     )
@@ -250,7 +265,9 @@ def update_draft(db: Session, order_id: int, data: PurchaseOrderUpdate) -> None:
         _require_eligible_supplier(db, data.supplier_id)
         order.supplier_id = data.supplier_id
         changed_fields.append("supplier_id")
-    for field in ("expected_delivery_date", "notes"):
+    if "delivery_yard_id" in sent:
+        _require_yard(db, data.delivery_yard_id)
+    for field in ("expected_delivery_date", "delivery_yard_id", "notes"):
         if field in sent and getattr(data, field) != getattr(order, field):
             setattr(order, field, getattr(data, field))
             changed_fields.append(field)

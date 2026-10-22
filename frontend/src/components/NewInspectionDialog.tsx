@@ -7,8 +7,8 @@ import { getMaterial, type ApiMaterial } from "../api/materials";
 type Lookup = { phase: "idle" | "loading" } | { phase: "found"; material: ApiMaterial } | { phase: "error"; message: string };
 
 /** Holds part of a batch's available stock for inspection. */
-export function NewInspectionDialog({ onClose, onDone }: { onClose: () => void; onDone: (message: string) => void }) {
-  const [batchId, setBatchId] = useState("");
+export function NewInspectionDialog({ onClose, onDone, initialBatchId = "" }: { onClose: () => void; onDone: (message: string) => void; initialBatchId?: string }) {
+  const [batchId, setBatchId] = useState(initialBatchId);
   const [lookup, setLookup] = useState<Lookup>({ phase: "idle" });
   const [quantity, setQuantity] = useState("");
   const [reason, setReason] = useState("");

@@ -4,6 +4,7 @@
 from datetime import date, timedelta
 
 import pytest
+from types import SimpleNamespace
 from fastapi import HTTPException
 
 from app.api.v1.materials import update_material
@@ -15,6 +16,8 @@ from app.services import audit_service, inspection_service, transfer_service
 from app.services.audit_service import AuditSource
 from tests.pg_support import pg_session_factory, requires_pg
 from tests.test_inspections_concurrency_pg import _held_batch, _seed
+
+OLA = SimpleNamespace(display_name="Ola")  # the signed-in user the API handlers record
 
 pytestmark = requires_pg
 
@@ -66,11 +69,11 @@ def test_stock_adjustment_is_atomic_and_appears_in_the_feed_on_postgres(factory)
         version = s.get(Material, "H").version
     with factory() as s:
         with pytest.raises(HTTPException) as refused:
-            update_material("H", MaterialUpdate(available=5, expected_version=version), db=s)  # no reason
+            update_material("H", MaterialUpdate(available=5, expected_version=version), user=OLA, db=s)  # no reason
         s.rollback()
     assert refused.value.status_code == 422
     with factory() as s:
-        update_material("H", MaterialUpdate(available=3, expected_version=version, actor="Ola", stock_reason="Recount"), db=s)
+        update_material("H", MaterialUpdate(available=3, expected_version=version, actor="Ola", stock_reason="Recount"), user=OLA, db=s)
     with factory() as s:
         adjustments = s.query(MaterialTransaction).filter_by(material_id="H", transaction_type="ADJUSTMENT").all()
         assert [(a.quantity, a.reason) for a in adjustments] == [(0, "available 4→3 — Recount")]

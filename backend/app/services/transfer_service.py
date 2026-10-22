@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidInputError, ItemNotFoundError
+from app.services import material_service
 from app.models.facility import StorageLocation, Yard
 from app.models.material import Material, MaterialStatusEnum
 from app.models.program import Ship
@@ -69,21 +70,24 @@ def list_transfers(db: Session, statuses: list[S], material_id: str, yard_id: st
     return total, items
 
 
-def summary(db: Session) -> dict:
-    counts = dict(db.execute(select(MaterialTransfer.status, func.count()).group_by(MaterialTransfer.status)).all())
+def summary(db: Session, yard: str = "") -> dict:
+    """Queue counts; `yard` limits them to transfers from or to that yard."""
+    in_yard = [(MaterialTransfer.from_yard_id == yard) | (MaterialTransfer.to_yard_id == yard)] if yard else []
+    counts = dict(db.execute(select(MaterialTransfer.status, func.count()).where(*in_yard).group_by(MaterialTransfer.status)).all())
     today = date.today()
     due_today = db.scalar(
         select(func.count()).select_from(MaterialTransfer)
-        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival == today)
+        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival == today, *in_yard)
     )
     overdue = db.scalar(
         select(func.count()).select_from(MaterialTransfer)
-        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival < today)
+        .where(MaterialTransfer.status == S.DISPATCHED, MaterialTransfer.expected_arrival < today, *in_yard)
     )
     received_this_week = db.scalar(
-        select(func.count()).select_from(MaterialTransferEvent).where(
+        select(func.count()).select_from(MaterialTransferEvent)
+        .join(MaterialTransfer, MaterialTransfer.id == MaterialTransferEvent.transfer_id).where(
             MaterialTransferEvent.to_status == S.RECEIVED.value,
-            MaterialTransferEvent.created_at >= datetime.now() - timedelta(days=7),
+            MaterialTransferEvent.created_at >= datetime.now() - timedelta(days=7), *in_yard,
         )
     )
     return {
@@ -307,6 +311,7 @@ def receive(db: Session, transfer_id: int, data: TransferReceive) -> None:
                     id=wanted, name=source.name, category_id=source.category_id, batch=source.batch,
                     unit=source.unit, status=status, quantity=0, available=0, reserved=0,
                     yard_id=transfer.to_yard_id, location_id=transfer.to_location_id, version=1,
+                    unit_cost=source.unit_cost, cost_currency=source.cost_currency,  # same goods, same cost
                 )
                 db.add(destination)
                 db.flush()
@@ -323,6 +328,9 @@ def receive(db: Session, transfer_id: int, data: TransferReceive) -> None:
                     raise InvalidInputError(f"Batch {destination.id} cannot receive this transfer: " + "; ".join(problems))
                 destination.version += 1
 
+        if destination is not source:
+            if source.unit_cost is not None:
+                material_service.apply_incoming_cost(destination, received, source.unit_cost, source.cost_currency)
         destination.quantity += received
         destination.available += received
         destination_id = destination.id

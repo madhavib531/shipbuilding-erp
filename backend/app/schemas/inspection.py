@@ -14,21 +14,21 @@ Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, m
 
 class InspectionCreate(BaseModel):
     """Holds part of a batch's available stock for inspection."""
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     material_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
     quantity: int = Field(..., gt=0, description="Available quantity to hold")
     reason: Reason
 
 
 class InspectionRelease(BaseModel):
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     expected_version: int = Field(..., ge=1)
     quantity: int = Field(..., gt=0, description="Quantity passed and made available")
     note: Optional[Reason] = None
 
 
 class InspectionReject(BaseModel):
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     expected_version: int = Field(..., ge=1)
     quantity: int = Field(..., gt=0, description="Quantity failed and removed from stock")
     reason: Reason

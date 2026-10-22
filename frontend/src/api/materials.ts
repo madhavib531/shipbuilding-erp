@@ -16,6 +16,9 @@ export type ApiMaterial = {
   location_id: string | null;
   ship_id: string | null;
   status: MaterialStatus;
+  /** Cost of one unit; null when the batch is not valued. */
+  unit_cost: string | number | null;
+  cost_currency: string | null;
   version: number;
   /** Part of the blocked quantity (quantity − available − reserved) awaiting an inspection decision. */
   held_quantity: number;
@@ -39,6 +42,8 @@ export type MaterialInput = {
   location_id: string | null;
   ship_id: string | null;
   status: MaterialStatus;
+  unit_cost?: string | null;
+  cost_currency?: string | null;
 };
 
 export type ReferenceData = {
@@ -59,6 +64,12 @@ export type MaterialSummary = {
   low_stock_batches: number;
   low_stock_ship_allocated: number;
   active_yards: number;
+  /** On-hand quantity x unit cost, per currency (no exchange rates). */
+  stock_value: { currency: string; amount: string }[];
+  /** Batches with stock but no unit cost. */
+  unvalued_batches: number;
+  /** stock_value converted into rupees with the admin-entered rates. */
+  stock_value_base: import("./currency").BaseTotal;
 };
 
 type Envelope<T> = { status: string; message: string; data: T };
@@ -74,8 +85,8 @@ export async function listMaterials(query: MaterialQuery, signal?: AbortSignal) 
   return res.data;
 }
 
-export async function getMaterialSummary(signal?: AbortSignal) {
-  return (await apiRequest<Envelope<MaterialSummary>>("/api/v1/materials/summary", { signal })).data;
+export async function getMaterialSummary(signal?: AbortSignal, yard = "") {
+  return (await apiRequest<Envelope<MaterialSummary>>("/api/v1/materials/summary" + (yard ? `?yard=${encodeURIComponent(yard)}` : ""), { signal })).data;
 }
 
 export async function getMaterial(id: string, signal?: AbortSignal) {

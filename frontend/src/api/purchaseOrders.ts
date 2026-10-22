@@ -1,5 +1,4 @@
 import { apiRequest } from "./client";
-import { CURRENT_USER } from "../currentUser";
 import type { SupplierStatus } from "./suppliers";
 
 export const PURCHASE_ORDER_STATUSES = ["Draft", "Approved", "Partially received", "Received", "Cancelled", "Closed"] as const;
@@ -66,6 +65,8 @@ export type PurchaseOrder = {
   supplier: { id: string; name: string; status: SupplierStatus };
   status: PurchaseOrderStatus;
   expected_delivery_date: string | null;
+  /** Where the goods are expected; receipts default to it. */
+  delivery_yard: { id: string; name: string } | null;
   notes: string | null;
   created_by: string;
   approved_by: string | null;
@@ -91,6 +92,8 @@ export type PurchaseOrderSummary = {
   due_this_week: number;
   partially_received: number;
   open_value: { currency: string; amount: Money }[];
+  /** Open value converted into rupees with the admin-entered rates. */
+  open_value_base: import("./currency").BaseTotal;
 };
 
 export type LineInput = {
@@ -106,6 +109,7 @@ export type LineInput = {
 export type OrderInput = {
   supplier_id: string;
   expected_delivery_date: string | null;
+  delivery_yard_id: string | null;
   notes: string | null;
   lines: LineInput[];
 };
@@ -131,19 +135,20 @@ export type ReceiptInput = {
 type Envelope<T> = { status: string; message: string; data: T };
 const BASE = "/api/v1/purchase-orders";
 const send = async <T>(url: string, method: string, body: object, headers?: Record<string, string>) =>
-  (await apiRequest<Envelope<T>>(url, { method, body: JSON.stringify({ actor: CURRENT_USER.name, ...body }), headers })).data;
+  (await apiRequest<Envelope<T>>(url, { method, body: JSON.stringify(body), headers })).data;
 
-export async function listPurchaseOrders(query: { search?: string; supplierId?: string; status?: PurchaseOrderStatus; overdue?: boolean; skip: number; limit: number }, signal?: AbortSignal) {
+export async function listPurchaseOrders(query: { search?: string; supplierId?: string; status?: PurchaseOrderStatus; overdue?: boolean; yard?: string; skip: number; limit: number }, signal?: AbortSignal) {
   const params = new URLSearchParams({ skip: String(query.skip), limit: String(query.limit) });
   if (query.search) params.set("search", query.search);
   if (query.supplierId) params.set("supplier_id", query.supplierId);
+  if (query.yard) params.set("yard", query.yard);
   if (query.status) params.set("status", query.status);
   if (query.overdue) params.set("overdue", "true");
   return (await apiRequest<Envelope<{ purchase_orders: PurchaseOrder[]; total: number }>>(`${BASE}?${params}`, { signal })).data;
 }
 
-export async function getPurchaseOrderSummary(signal?: AbortSignal) {
-  return (await apiRequest<Envelope<PurchaseOrderSummary>>(`${BASE}/summary`, { signal })).data;
+export async function getPurchaseOrderSummary(signal?: AbortSignal, yard = "") {
+  return (await apiRequest<Envelope<PurchaseOrderSummary>>(`${BASE}/summary` + (yard ? `?yard=${encodeURIComponent(yard)}` : ""), { signal })).data;
 }
 
 export async function getPurchaseOrder(id: number, signal?: AbortSignal) {
@@ -167,9 +172,11 @@ export const postGoodsReceipt = (id: number, expectedVersion: number, input: Rec
 
 export function formatMoney(amount: Money | number, currency: string | null) {
   const value = Number(amount);
-  if (!currency) return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  // Rupee amounts use Indian digit grouping (₹1,20,000.00).
+  const locale = currency === "INR" ? "en-IN" : undefined;
+  if (!currency) return value.toLocaleString(locale, { maximumFractionDigits: 2 });
   try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
+    return new Intl.NumberFormat(locale, { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
   } catch {
     return `${currency} ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
   }

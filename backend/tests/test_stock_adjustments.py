@@ -65,10 +65,11 @@ class TestCreate:
         assert rows(db, "N") == []
 
     @pytest.mark.parametrize("actor", [None, "", "   "])
-    def test_creating_with_stock_requires_an_actor(self, client, db, refs, actor):
+    def test_opening_balance_is_recorded_under_the_signed_in_user(self, client, db, refs, actor):
+        # The ledger actor comes from the session (here the test stand-in, "Test Admin"), not the request body.
         r = client.post(URL, json=self.new(actor=actor))
-        assert r.status_code == 422 and "actor is required" in r.json()["detail"]
-        assert db.get(Material, "N") is None and rows(db, "N") == []
+        assert r.status_code == 201, r.text
+        assert rows(db, "N")[0][6] == "Test Admin"
 
 
 class TestEdit:
@@ -94,14 +95,16 @@ class TestEdit:
         ({"quantity": 12, "stock_reason": "", **WHO}, "reason is required"),
         ({"quantity": 12, "stock_reason": "   ", **WHO}, "reason is required"),
         ({"reserved": 1, "stock_reason": None, **WHO}, "reason is required"),
-        ({"quantity": 12, "stock_reason": "count"}, "actor is required"),
-        ({"available": 7, "stock_reason": "count", "actor": "  "}, "actor is required"),
     ])
     def test_stock_change_without_reason_or_actor_is_rejected_and_changes_nothing(self, client, db, refs, body, fragment):
         before = stock(db)
         r = edit(client, **body)
         assert r.status_code == 422 and fragment in r.json()["detail"], r.text
         assert stock(db) == before and rows(db) == []
+
+    def test_stock_change_without_an_actor_is_recorded_under_the_signed_in_user(self, client, db, refs):
+        assert edit(client, quantity=12, stock_reason="count").status_code == 200
+        assert rows(db)[0][6] == "Test Admin"
 
     def test_non_stock_edits_need_no_reason_and_record_nothing(self, client, db, refs):
         assert edit(client, name="Plate 12mm", location_id="L2", status="Low stock").status_code == 200

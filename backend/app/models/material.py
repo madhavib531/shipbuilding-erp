@@ -1,6 +1,6 @@
 """Material and MaterialCategory models."""
 
-from sqlalchemy import CheckConstraint, Column, String, Integer, Float, ForeignKey, Enum
+from sqlalchemy import CheckConstraint, Column, String, Integer, Float, ForeignKey, Enum, Numeric
 from sqlalchemy.orm import relationship
 from enum import Enum as PyEnum
 from app.models.base import Base, TimestampMixin
@@ -41,6 +41,8 @@ class Material(Base, TimestampMixin):
         CheckConstraint("available >= 0", name="ck_materials_available_nonnegative"),
         CheckConstraint("reserved >= 0", name="ck_materials_reserved_nonnegative"),
         CheckConstraint("available + reserved <= quantity", name="ck_materials_allocation_within_quantity"),
+        CheckConstraint("unit_cost IS NULL OR unit_cost >= 0", name="ck_materials_unit_cost_nonnegative"),
+        CheckConstraint("(unit_cost IS NULL) = (cost_currency IS NULL)", name="ck_materials_cost_has_currency"),
     )
 
     id = Column(String(50), primary_key=True)
@@ -55,6 +57,10 @@ class Material(Base, TimestampMixin):
     location_id = Column(String(50), ForeignKey("storage_locations.id"))
     ship_id = Column(String(50), ForeignKey("ships.id"))
     status = Column(Enum(MaterialStatusEnum), default=MaterialStatusEnum.HEALTHY, nullable=False)
+    # Cost of one unit, for stock valuation. Set from the purchase price when goods are received, or by hand;
+    # NULL means the batch is not valued. No exchange rates: values are reported per currency.
+    unit_cost = Column(Numeric(14, 4))
+    cost_currency = Column(String(3))
     # Incremented on every stock or attribute change; clients send it back to detect stale edits.
     version = Column(Integer, default=1, server_default="1", nullable=False)
 

@@ -48,6 +48,8 @@ def test_empty_database_returns_zeros_without_dividing_by_zero(client):
     assert summary(client) == {
         "total_batches": 0, "available_batches": 0, "available_percent": 0.0, "reserved_batches": 0,
         "low_stock_batches": 0, "low_stock_ship_allocated": 0, "active_yards": 0,
+        "stock_value": [], "unvalued_batches": 0,
+        "stock_value_base": {"currency": "INR", "amount": "0.00", "parts": [], "missing_rates": []},
     }
 
 

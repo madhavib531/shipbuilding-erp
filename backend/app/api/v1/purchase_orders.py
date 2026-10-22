@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.auth import require, stamp
 from app.database import get_db
+from app.models.user import User
 from app.models.purchase_order import PurchaseOrderStatus
 from app.schemas.common import SuccessResponse
 from app.schemas.purchase_order import (
@@ -45,11 +47,12 @@ def list_purchase_orders(
     supplier_id: str = Query(""),
     search: str = Query("", description="PO number, supplier name, line description or supplier part number"),
     overdue: bool = Query(False, description="Only open orders past their expected delivery date"),
+    yard: str = Query("", description="Only orders delivered to this yard"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    total, items = service.list_orders(db, statuses, supplier_id, search, overdue, skip, limit)
+    total, items = service.list_orders(db, statuses, supplier_id, search, overdue, skip, limit, yard)
     return SuccessResponse(
         message="Purchase orders retrieved successfully",
         data={
@@ -60,8 +63,8 @@ def list_purchase_orders(
 
 
 @router.get("/summary", response_model=SuccessResponse)
-def purchase_order_summary(db: Session = Depends(get_db)):
-    return SuccessResponse(message="Purchase-order summary retrieved successfully", data=service.summary(db))
+def purchase_order_summary(yard: str = Query("", description="Only orders delivered to this yard"), db: Session = Depends(get_db)):
+    return SuccessResponse(message="Purchase-order summary retrieved successfully", data=service.summary(db, yard))
 
 
 @router.get("/{order_id}", response_model=SuccessResponse)
@@ -74,8 +77,10 @@ def create_purchase_order(
     data: PurchaseOrderCreate,
     response: Response,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key", max_length=100),
+    user: User = Depends(require("procurement")),
     db: Session = Depends(get_db),
 ):
+    data = stamp(data, user)
     order_id, created = _run(db, lambda: service.create_order(db, data, idempotency_key))
     if not created:
         response.status_code = status.HTTP_200_OK
@@ -83,31 +88,36 @@ def create_purchase_order(
 
 
 @router.patch("/{order_id}", response_model=SuccessResponse)
-def update_purchase_order(order_id: int, data: PurchaseOrderUpdate, db: Session = Depends(get_db)):
+def update_purchase_order(order_id: int, data: PurchaseOrderUpdate, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
+    data = stamp(data, user)
     _run(db, lambda: service.update_draft(db, order_id, data))
     return _detail(db, order_id, "Purchase order updated")
 
 
 @router.post("/{order_id}/approve", response_model=SuccessResponse)
-def approve_purchase_order(order_id: int, data: PurchaseOrderAction, db: Session = Depends(get_db)):
+def approve_purchase_order(order_id: int, data: PurchaseOrderAction, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
+    data = stamp(data, user)
     _run(db, lambda: service.approve(db, order_id, data))
     return _detail(db, order_id, "Purchase order approved")
 
 
 @router.post("/{order_id}/reopen", response_model=SuccessResponse)
-def reopen_purchase_order(order_id: int, data: PurchaseOrderReasonAction, db: Session = Depends(get_db)):
+def reopen_purchase_order(order_id: int, data: PurchaseOrderReasonAction, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
+    data = stamp(data, user)
     _run(db, lambda: service.reopen(db, order_id, data))
     return _detail(db, order_id, "Purchase order reopened as a draft")
 
 
 @router.post("/{order_id}/cancel", response_model=SuccessResponse)
-def cancel_purchase_order(order_id: int, data: PurchaseOrderReasonAction, db: Session = Depends(get_db)):
+def cancel_purchase_order(order_id: int, data: PurchaseOrderReasonAction, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
+    data = stamp(data, user)
     _run(db, lambda: service.cancel(db, order_id, data))
     return _detail(db, order_id, "Purchase order cancelled")
 
 
 @router.post("/{order_id}/close", response_model=SuccessResponse)
-def close_purchase_order(order_id: int, data: PurchaseOrderReasonAction, db: Session = Depends(get_db)):
+def close_purchase_order(order_id: int, data: PurchaseOrderReasonAction, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
+    data = stamp(data, user)
     _run(db, lambda: service.close(db, order_id, data))
     return _detail(db, order_id, "Purchase order closed")
 
@@ -125,14 +135,21 @@ def post_goods_receipt(
     data: GoodsReceiptCreate,
     response: Response,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key", max_length=100),
+    user: User = Depends(require("receiving")),
     db: Session = Depends(get_db),
 ):
     """Receive goods: accepted quantities go into stock with a RECEIPT ledger row; rejected ones never do."""
+    data = stamp(data, user)
     receipt_id, created = _run(db, lambda: receipt_service.post_receipt(db, order_id, data, idempotency_key))
     if not created:
         response.status_code = status.HTTP_200_OK
     receipt = receipt_service.get_receipt(db, receipt_id)
     order = service.get_order(db, receipt.purchase_order_id)
+    if created:
+        from app.api.v1.inspections import notify_hold_opened
+        for line in receipt.lines:
+            if line.inspection_hold is not None:
+                notify_hold_opened(db, line.inspection_hold, user)
     return SuccessResponse(
         message="Goods receipt posted" if created else "Goods receipt already exists for this Idempotency-Key",
         data={"receipt": GoodsReceiptRead.model_validate(receipt).model_dump(mode="json"),

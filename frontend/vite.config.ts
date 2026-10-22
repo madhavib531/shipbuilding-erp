@@ -2,6 +2,7 @@ import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
+import basicSsl from '@vitejs/plugin-basic-ssl'
 
 import siteConfiguration from './.figma/make/site.json'
 
@@ -10,6 +11,10 @@ import siteConfiguration from './.figma/make/site.json'
 export default defineConfig(({ mode }) => {
   // .figma/make/deploy-preview passes `--mode development` for cached-preview builds.
   const emitSourcemaps = mode === 'development'
+  // `npm run dev:https` (mode "https"): self-signed HTTPS so phones on the LAN can use the camera, with the
+  // API proxied through this server so the page never calls plain HTTP and needs no extra CORS origin.
+  const https = mode === 'https'
+  const apiTarget = process.env.API_PROXY_TARGET || 'http://localhost:8000'
 
   return {
     base: process.env.FIGMA_PUBLIC_URL ? `${process.env.FIGMA_PUBLIC_URL}/` : '/',
@@ -24,6 +29,7 @@ react(),
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
       figmaMakeKitPlugin({ storiesGlob: '/src/**/*.stories.{ts,tsx,js,jsx}' }),
+      ...(https ? [basicSsl({ name: 'dockyard-dev' })] : []),
     ],
     resolve: {
       alias: {
@@ -34,6 +40,7 @@ react(),
       host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
       port: parseInt(process.env.PORT || '8443'),
       strictPort: true,
+      ...(https ? { proxy: { '/api': apiTarget, '/health': apiTarget } } : {}),
       watch: {
         ignored: [
           '**/.figma/**',

@@ -27,7 +27,7 @@ export type AuditEvent = {
   created_at: string;
 };
 
-export type AuditQuery = { skip: number; limit: number; search?: string; source?: AuditSource; dateFrom?: string; dateTo?: string };
+export type AuditQuery = { skip: number; limit: number; search?: string; source?: AuditSource; dateFrom?: string; dateTo?: string; yard?: string };
 
 type Envelope<T> = { status: string; message: string; data: T };
 
@@ -35,6 +35,7 @@ export async function listAuditEvents(query: AuditQuery, signal?: AbortSignal) {
   const params = new URLSearchParams({ skip: String(query.skip), limit: String(query.limit) });
   if (query.search) params.set("search", query.search);
   if (query.source) params.set("source", query.source);
+  if (query.yard) params.set("yard", query.yard);
   if (query.dateFrom) params.set("date_from", query.dateFrom);
   if (query.dateTo) params.set("date_to", query.dateTo);
   return (await apiRequest<Envelope<{ events: AuditEvent[]; total: number }>>(`/api/v1/audit-events?${params}`, { signal })).data;

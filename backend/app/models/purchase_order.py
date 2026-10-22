@@ -51,6 +51,8 @@ class PurchaseOrder(Base, TimestampMixin):
     supplier_id = Column(String(50), ForeignKey("suppliers.id"), nullable=False, index=True)
     status = Column(Enum(PurchaseOrderStatus), nullable=False, default=PurchaseOrderStatus.DRAFT)
     expected_delivery_date = Column(Date)
+    # Where the goods are expected; receipts default to it and orders can be filtered by it. Optional.
+    delivery_yard_id = Column(String(50), ForeignKey("yards.id"))
     notes = Column(Text)
     created_by = Column(String(100), nullable=False)
     approved_by = Column(String(100))
@@ -60,6 +62,7 @@ class PurchaseOrder(Base, TimestampMixin):
     request_fingerprint = Column(String(64))
 
     supplier = relationship("Supplier")
+    delivery_yard = relationship("Yard")
     lines = relationship("PurchaseOrderLine", back_populates="purchase_order", order_by="PurchaseOrderLine.line_no")
     events = relationship("PurchaseOrderEvent", back_populates="purchase_order", order_by="PurchaseOrderEvent.id")
     receipts = relationship("GoodsReceipt", back_populates="purchase_order", order_by="GoodsReceipt.id")

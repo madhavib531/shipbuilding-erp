@@ -402,7 +402,8 @@ class TestSummary:
     def test_empty(self, client, refs):
         s = client.get(f"{BASE}/summary").json()["data"]
         assert s == {"by_status": {"Draft": 0, "Approved": 0, "Partially received": 0, "Received": 0, "Cancelled": 0, "Closed": 0},
-                     "open": 0, "overdue": 0, "due_this_week": 0, "partially_received": 0, "open_value": []}
+                     "open": 0, "overdue": 0, "due_this_week": 0, "partially_received": 0, "open_value": [],
+                     "open_value_base": {"currency": "INR", "amount": "0.00", "parts": [], "missing_rates": []}}
 
     def test_counts_and_open_value_by_currency(self, client, refs, db):
         created(client)                                                                    # draft: not open

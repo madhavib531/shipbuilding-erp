@@ -60,8 +60,10 @@ def get_hold(db: Session, hold_id: int) -> InspectionHold:
     return hold
 
 
-def list_holds(db: Session, statuses: list[S], search: str, skip: int, limit: int):
+def list_holds(db: Session, statuses: list[S], search: str, skip: int, limit: int, yard: str = ""):
     query = select(InspectionHold).join(Material, InspectionHold.material_id == Material.id)
+    if yard:
+        query = query.where(Material.yard_id == yard)
     if statuses:
         query = query.where(InspectionHold.status.in_(statuses))
     if search.strip():
@@ -76,15 +78,18 @@ def list_holds(db: Session, statuses: list[S], search: str, skip: int, limit: in
     return total, items
 
 
-def summary(db: Session) -> dict:
+def summary(db: Session, yard: str = "") -> dict:
+    """`yard` limits the counts to holds on batches in that yard."""
     week_ago = datetime.now() - timedelta(days=7)
+    in_yard = [InspectionHold.material_id.in_(select(Material.id).where(Material.yard_id == yard))] if yard else []
 
     def decided_this_week(action: str) -> int:
-        return db.scalar(select(func.count(func.distinct(InspectionEvent.hold_id))).where(
-            InspectionEvent.action == action, InspectionEvent.created_at >= week_ago))
+        return db.scalar(select(func.count(func.distinct(InspectionEvent.hold_id)))
+                         .join(InspectionHold, InspectionHold.id == InspectionEvent.hold_id).where(
+            InspectionEvent.action == action, InspectionEvent.created_at >= week_ago, *in_yard))
 
     return {
-        "open": db.scalar(select(func.count()).select_from(InspectionHold).where(InspectionHold.status == S.OPEN)),
+        "open": db.scalar(select(func.count()).select_from(InspectionHold).where(InspectionHold.status == S.OPEN, *in_yard)),
         "released_this_week": decided_this_week("released"),
         "rejected_this_week": decided_this_week("rejected"),
     }

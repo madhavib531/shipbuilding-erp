@@ -1,6 +1,7 @@
 """PostgreSQL-only concurrency tests for inspection holds (see tests/pg_support.py)."""
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -22,6 +23,7 @@ from app.services import transfer_service as transfers
 from tests.pg_support import pg_session_factory, requires_pg, run_concurrently
 
 pytestmark = requires_pg
+_EDITOR = SimpleNamespace(display_name="QA")  # the signed-in user the API handler records
 
 
 def _seed(s):
@@ -111,7 +113,7 @@ def test_dispatch_racing_rejection_never_uses_held_stock(session_factory):
 
 def test_inventory_edit_racing_release_cannot_free_held_stock(session_factory):
     hid = _held_batch(session_factory)
-    edit = lambda s: update_material("H", MaterialUpdate(available=10), db=s)  # noqa: E731
+    edit = lambda s: update_material("H", MaterialUpdate(available=10), user=_EDITOR, db=s)  # noqa: E731
     results = run_concurrently(session_factory, [edit, _release(hid, 1, 4), edit])
     assert results[1] == "ok" and results[0] == results[2] == 422, results
     assert _stock(session_factory) == (10, 4, 0, 6)

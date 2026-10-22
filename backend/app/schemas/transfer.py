@@ -19,23 +19,23 @@ class TransferCreate(BaseModel):
     to_location_id: Optional[EntityId] = None
     expected_arrival: Optional[date] = None
     notes: Optional[Reason] = None
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
 
 
 class TransferNote(BaseModel):
     """Approve or dispatch; the note is optional."""
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     reason: Optional[Reason] = None
 
 
 class TransferReason(BaseModel):
     """Reject or cancel; a reason is required."""
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     reason: Reason
 
 
 class TransferReceive(BaseModel):
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     received_quantity: Optional[int] = Field(None, ge=0, description="Defaults to the dispatched quantity")
     destination_material_id: Optional[EntityId] = Field(
         None,

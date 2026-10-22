@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.auth import require, stamp
 from app.database import get_db
+from app.models.user import User
 from app.models.supplier import SupplierStatusEnum
 from app.schemas.common import SuccessResponse
 from app.schemas.supplier import SupplierCreate, SupplierRead, SupplierUpdate
@@ -53,12 +55,12 @@ def get_supplier(supplier_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
-def create_supplier(data: SupplierCreate, db: Session = Depends(get_db)):
+def create_supplier(data: SupplierCreate, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
     supplier = _write(db, lambda: service.create_supplier(db, data))
     return SuccessResponse(message="Supplier created successfully", data=_read(supplier))
 
 
 @router.patch("/{supplier_id}", response_model=SuccessResponse)
-def update_supplier(supplier_id: str, data: SupplierUpdate, db: Session = Depends(get_db)):
+def update_supplier(supplier_id: str, data: SupplierUpdate, user: User = Depends(require("procurement")), db: Session = Depends(get_db)):
     supplier = _write(db, lambda: service.update_supplier(db, supplier_id, data))
     return SuccessResponse(message="Supplier updated successfully", data=_read(supplier))

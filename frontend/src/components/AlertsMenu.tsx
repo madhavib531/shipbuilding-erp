@@ -5,6 +5,7 @@ import { getInspectionSummary } from "../api/inspections";
 import { getMaterialSummary } from "../api/materials";
 import { getPurchaseOrderSummary } from "../api/purchaseOrders";
 import { getTransferSummary } from "../api/transfers";
+import { listNotifications, markAllNotificationsRead, markNotificationRead, type StoredNotification } from "../api/notifications";
 
 type Alert = { key: string; count: number; text: string; page: PageName };
 
@@ -34,15 +35,22 @@ async function loadAlerts(signal: AbortSignal): Promise<{ alerts: Alert[]; faile
   return { alerts: alerts.filter((a) => a.count > 0), failed, at: new Date() };
 }
 
+const ago = (iso: string) => {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  return minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : minutes < 1440 ? `${Math.round(minutes / 60)} h ago` : new Date(iso).toLocaleDateString();
+};
+
 export function AlertsMenu({ onNavigate }: { onNavigate: (page: PageName) => void }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<{ alerts: Alert[]; failed: number; at: Date } | null>(null);
+  const [inbox, setInbox] = useState<{ notifications: StoredNotification[]; unread: number; email_enabled: boolean } | null>(null);
   const [tick, setTick] = useState(0);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     loadAlerts(controller.signal).then(setData).catch(() => {});
+    listNotifications(controller.signal).then(setInbox).catch(() => {});
     const id = window.setTimeout(() => setTick((t) => t + 1), REFRESH_MS);
     return () => { controller.abort(); window.clearTimeout(id); };
   }, [tick]);
@@ -60,18 +68,33 @@ export function AlertsMenu({ onNavigate }: { onNavigate: (page: PageName) => voi
   }, [open, close]);
 
   const total = data?.alerts.reduce((n, a) => n + a.count, 0) ?? 0;
+  const unread = inbox?.unread ?? 0;
+  const openNote = async (n: StoredNotification) => {
+    close();
+    if (!n.read_at) await markNotificationRead(n.id).catch(() => {});
+    setTick((t) => t + 1);
+    if (n.page) onNavigate(n.page as PageName);
+  };
+  const readAll = async () => { await markAllNotificationsRead().catch(() => {}); setTick((t) => t + 1); };
   return <div className="alerts-menu" ref={root}>
-    <button className="icon-button notification-button" aria-label={total ? `Alerts: ${total} items need attention` : "Alerts"} aria-expanded={open} aria-haspopup="true" title="Items that need attention" onClick={toggle}>
-      <Icon name="bell"/>{total > 0 && <b className="alert-count">{total > 99 ? "99+" : total}</b>}
+    <button className="icon-button notification-button" aria-label={unread ? `Notifications: ${unread} unread` : total ? `Alerts: ${total} items need attention` : "Notifications"} aria-expanded={open} aria-haspopup="true" title="Notifications and items that need attention" onClick={toggle}>
+      <Icon name="bell"/>{unread > 0 ? <b className="alert-count">{unread > 99 ? "99+" : unread}</b> : total > 0 && <b className="alert-count muted">{total > 99 ? "99+" : total}</b>}
     </button>
-    {open && <div className="alerts-panel" role="dialog" aria-label="Alerts">
+    {open && <div className="alerts-panel" role="dialog" aria-label="Notifications">
+      <div className="alerts-head"><strong>Notifications</strong>{unread > 0 ? <button className="link-button" onClick={readAll}>Mark all read</button> : <small>{inbox ? "All read" : "Loading…"}</small>}</div>
+      <div className="notification-list">
+        {inbox && inbox.notifications.length === 0 && <p className="alerts-empty">No notifications yet.</p>}
+        {inbox?.notifications.map((n) => <button key={n.id} className={`alert-item notification-item${n.read_at ? "" : " unread"}`} onClick={() => openNote(n)}>
+          <span><strong>{n.title}</strong>{n.body && <small>{n.body}</small>}</span><small>{ago(n.created_at)}</small>
+        </button>)}
+      </div>
       <div className="alerts-head"><strong>Needs attention</strong><small>{data ? `Live · checked ${data.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}` : "Loading…"}</small></div>
       {data && data.alerts.length === 0 && !data.failed && <p className="alerts-empty">Nothing needs attention right now.</p>}
       {data?.alerts.map((a) => <button key={a.key} className="alert-item" onClick={() => { close(); onNavigate(a.page); }}>
         <span>{a.text}</span><small>{a.page}<Icon name="chevron" size={12}/></small>
       </button>)}
       {data && data.failed > 0 && <p className="alerts-empty" role="alert">{plural(data.failed, "source", "sources")} couldn’t be checked; the list may be incomplete.</p>}
-      <p className="alerts-foot">Read live from current records — not stored notifications.</p>
+      <p className="alerts-foot">Notifications are kept for your role{inbox?.email_enabled ? " and also emailed when you have an address" : ""}. “Needs attention” is read live from current records.</p>
     </div>}
   </div>;
 }

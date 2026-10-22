@@ -10,18 +10,21 @@ import {
   type MaterialStatus,
   type ReferenceData,
 } from "../api/materials";
-import { CURRENT_USER } from "../currentUser";
 
 type FormState = {
   id: string; name: string; category_id: string; batch: string; unit: string; status: MaterialStatus;
   quantity: string; available: string; reserved: string; yard_id: string; location_id: string; ship_id: string;
+  unit_cost: string; cost_currency: string;
 };
+
+const COST = /^\d{1,10}(\.\d{1,4})?$/;
 
 const fromMaterial = (m?: ApiMaterial): FormState => ({
   id: m?.id ?? "", name: m?.name ?? "", category_id: m?.category_id ?? "", batch: m?.batch ?? "",
   unit: m?.unit ?? "", status: m?.status ?? "Healthy",
   quantity: m ? String(m.quantity) : "", available: m ? String(m.available) : "", reserved: m ? String(m.reserved) : "0",
   yard_id: m?.yard_id ?? "", location_id: m?.location_id ?? "", ship_id: m?.ship_id ?? "",
+  unit_cost: m?.unit_cost == null ? "" : String(Number(m.unit_cost)), cost_currency: m?.cost_currency ?? (m ? "" : "INR"),
 });
 
 function toInput(form: FormState): MaterialInput | string {
@@ -33,7 +36,12 @@ function toInput(form: FormState): MaterialInput | string {
     if (form[key as keyof typeof nums].trim() === "" || !Number.isInteger(value) || value < 0) return `${key[0].toUpperCase()}${key.slice(1)} must be a whole number of 0 or more.`;
   }
   if (nums.available + nums.reserved > nums.quantity) return `Available (${nums.available}) + reserved (${nums.reserved}) cannot exceed quantity (${nums.quantity}).`;
+  const cost = form.unit_cost.trim(), currency = form.cost_currency.trim().toUpperCase();
+  if (cost && !COST.test(cost)) return "Unit cost must be 0 or more with at most 4 decimal places.";
+  if (cost && !currency) return "Give the unit cost's currency (INR for rupees).";
+  if (currency && !/^[A-Z]{3}$/.test(currency)) return "Currency must be a 3-letter code such as EUR.";
   return {
+    unit_cost: cost ? String(Number(cost)) : null, cost_currency: cost ? currency : null,  // the INR default alone means "no cost"
     name: form.name.trim(), category_id: form.category_id, batch: form.batch.trim(), unit: form.unit.trim(), status: form.status,
     ...nums, yard_id: form.yard_id, location_id: form.location_id || null, ship_id: form.ship_id || null,
   };
@@ -80,10 +88,10 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         const original = toInput(fromMaterial(material)) as MaterialInput;
         const changes = Object.fromEntries(Object.entries(input).filter(([k, v]) => original[k as keyof MaterialInput] !== v));
         if (Object.keys(changes).length === 0) return onClose();
-        await updateMaterial(material.id, stockChanged ? { ...changes, actor: CURRENT_USER.name, stock_reason: stockReason.trim() } : changes, material.version);
+        await updateMaterial(material.id, stockChanged ? { ...changes, stock_reason: stockReason.trim() } : changes, material.version);
         onDone(`Material ${material.id} updated`);
       } else {
-        const created = await createMaterial({ id: form.id.trim(), ...input, actor: CURRENT_USER.name, stock_reason: stockReason.trim() || null });
+        const created = await createMaterial({ id: form.id.trim(), ...input, stock_reason: stockReason.trim() || null });
         onDone(`Material ${created.id} created`);
       }
     } catch (err) {
@@ -134,8 +142,10 @@ export function MaterialDialog({ material, refs, refsError, onClose, onDone }: {
         <label><span>Yard</span><Select name="yard_id" value={form.yard_id} onChange={(e) => setYard(e.target.value)} disabled={formDisabled}><option value="">Select yard</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select></label>
         <label><span>Storage location</span><Select name="location_id" value={form.location_id} onChange={(e) => set("location_id", e.target.value)} disabled={formDisabled || !form.yard_id}><option value="">No location</option>{locations.map((l) => <option key={l.id} value={l.id}>Zone {l.zone} · Aisle {l.aisle}{l.bin ? ` · Bin ${l.bin}` : ""}</option>)}</Select></label>
         <label><span>Allocated ship</span><Select name="ship_id" value={form.ship_id} onChange={(e) => set("ship_id", e.target.value)} disabled={formDisabled || !form.yard_id}><option value="">Unassigned</option>{ships.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></label>
+        <label><span>Unit cost (optional)</span><Input name="unit_cost" inputMode="decimal" placeholder="e.g. 245.50" value={form.unit_cost} onChange={(e) => set("unit_cost", e.target.value)} disabled={formDisabled}/></label>
+        <label><span>Cost currency</span><Input name="cost_currency" placeholder="e.g. EUR" value={form.cost_currency} onChange={(e) => set("cost_currency", e.target.value.toUpperCase())} maxLength={3} disabled={formDisabled}/></label>
         {stockChanged && <label style={{ gridColumn: "1 / -1" }}><span>Reason for stock change (required)</span><Input name="stock_reason" placeholder="e.g. Cycle count, damaged in storage, reserved for NS Atlas" value={stockReason} onChange={(e) => setStockReason(e.target.value)} maxLength={500} disabled={formDisabled}/></label>}
-        {stockChanged && <p className="muted-copy" style={{ gridColumn: "1 / -1" }}>Saved as a stock adjustment under the name {CURRENT_USER.name} (not verified — there is no sign-in yet), with each figure’s before and after value.</p>}
+        {stockChanged && <p className="muted-copy" style={{ gridColumn: "1 / -1" }}>Saved as a stock adjustment under your name, with each figure’s before and after value.</p>}
         {!editing && Number(form.quantity) > 0 && <label style={{ gridColumn: "1 / -1" }}><span>Opening balance note (optional)</span><Input name="stock_reason" placeholder="e.g. Migrated from paper stock card" value={stockReason} onChange={(e) => setStockReason(e.target.value)} maxLength={500} disabled={formDisabled}/></label>}
       </div>
       {held > 0 && <div className="notice"><Icon name="warning"/>{held} {material!.unit} of this batch are on inspection hold. Available plus reserved cannot exceed the {material!.quantity - held} {material!.unit} not on hold; release or reject held stock on the Quality page.</div>}

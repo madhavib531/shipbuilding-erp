@@ -27,8 +27,9 @@ export function PurchaseOrderDialog({ order, refs, refsError, onClose, onDone }:
   const [suppliersError, setSuppliersError] = useState("");
   const [supplierId, setSupplierId] = useState(order?.supplier.id ?? "");
   const [delivery, setDelivery] = useState(order?.expected_delivery_date ?? "");
+  const [deliveryYard, setDeliveryYard] = useState(order?.delivery_yard?.id ?? "");
   const [notes, setNotes] = useState(order?.notes ?? "");
-  const [currency, setCurrency] = useState(order?.currency ?? "");
+  const [currency, setCurrency] = useState(order?.currency ?? "INR");
   const [lines, setLines] = useState<LineForm[]>(() => order?.lines.length
     ? order.lines.map((l) => ({ category_id: l.category.id, description: l.description, unit: l.unit, supplier_part_number: l.supplier_part_number ?? "", ordered_quantity: String(l.ordered_quantity), unit_price: String(Number(l.unit_price)) }))
     : [emptyLine()]);
@@ -60,7 +61,7 @@ export function PurchaseOrderDialog({ order, refs, refsError, onClose, onDone }:
       if (!PRICE.test(l.unit_price.trim())) return `Line ${n}: unit price must be 0 or more with at most 4 decimal places.`;
       out.push({ category_id: l.category_id, description: l.description.trim(), unit: l.unit.trim(), supplier_part_number: l.supplier_part_number.trim() || null, ordered_quantity: qty, unit_price: l.unit_price.trim(), currency: cur });
     }
-    return { supplier_id: supplierId, expected_delivery_date: delivery || null, notes: notes.trim() || null, lines: out };
+    return { supplier_id: supplierId, expected_delivery_date: delivery || null, delivery_yard_id: deliveryYard || null, notes: notes.trim() || null, lines: out };
   };
 
   const submit = async (event: FormEvent) => {
@@ -74,6 +75,7 @@ export function PurchaseOrderDialog({ order, refs, refsError, onClose, onDone }:
         const changes: Partial<OrderInput> = {};
         if (input.supplier_id !== order.supplier.id) changes.supplier_id = input.supplier_id;
         if (input.expected_delivery_date !== order.expected_delivery_date) changes.expected_delivery_date = input.expected_delivery_date;
+        if (input.delivery_yard_id !== (order.delivery_yard?.id ?? null)) changes.delivery_yard_id = input.delivery_yard_id;
         if (input.notes !== order.notes) changes.notes = input.notes;
         const before = order.lines.map((l) => lineKey({ category_id: l.category.id, description: l.description, unit: l.unit, supplier_part_number: l.supplier_part_number, ordered_quantity: l.ordered_quantity, unit_price: l.unit_price, currency: l.currency }));
         if (JSON.stringify(before) !== JSON.stringify(input.lines.map(lineKey))) changes.lines = input.lines;
@@ -110,6 +112,7 @@ export function PurchaseOrderDialog({ order, refs, refsError, onClose, onDone }:
           {orderable.map((s) => <option key={s.id} value={s.id}>{s.name} · {s.status}</option>)}
         </Select></label>
         <label><span>Expected delivery</span><Input name="expected_delivery_date" type="date" value={delivery} onChange={(e) => setDelivery(e.target.value)} disabled={disabled}/></label>
+        <label><span>Deliver to yard</span><Select name="delivery_yard_id" value={deliveryYard} onChange={(e) => setDeliveryYard(e.target.value)} disabled={disabled}><option value="">Not set</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select></label>
         <label><span>Currency (all lines)</span><Input name="currency" placeholder="e.g. USD" value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} maxLength={3} disabled={disabled}/></label>
         <label><span>Notes</span><Input name="notes" placeholder="Optional" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} disabled={disabled}/></label>
         <div style={full} className="table-scroll"><table>

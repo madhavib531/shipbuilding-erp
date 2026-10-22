@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useCallback, useRef, type FormEvent } from "react";
+import { createContext, lazy, Suspense, useContext, useState, useEffect, useCallback, useRef, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 import {
   navItems,
@@ -28,6 +28,11 @@ import { InspectionDialog, inspectionTone } from "./components/InspectionDialog"
 import { NewInspectionDialog } from "./components/NewInspectionDialog";
 import { printAs } from "./components/print";
 import { AlertsMenu } from "./components/AlertsMenu";
+import { OFFLINE_EVENT, connectivity, type Connectivity } from "./api/offline";
+import { conversionNote, getRates } from "./api/currency";
+import { ExchangeRates } from "./components/ExchangeRates";
+import { askAssistant, getAssistantStatus, type AiAnswer, type AssistantStatus, type Turn } from "./api/assistant";
+import { listNotifications } from "./api/notifications";
 import { INSPECTION_STATUSES, getInspectionSummary, listInspections, type Inspection, type InspectionStatus, type InspectionSummary } from "./api/inspections";
 import { PurchaseOrderDialog } from "./components/PurchaseOrderDialog";
 import { PurchaseOrderDetailDialog, orderTone } from "./components/PurchaseOrderDetailDialog";
@@ -40,8 +45,10 @@ import { getHealth } from "./api/health";
 import { API_BASE_URL } from "./api/client";
 import { getAnalyticsOverview, type AnalyticsOverview } from "./api/analytics";
 import { QrLabelDialog } from "./components/QrLabel";
-import { auditCsv, downloadCsv, inventoryCsv } from "./api/csvExport";
-import { CURRENT_USER } from "./currentUser";
+import { auditCsv, downloadCsv, inspectionsCsv, inventoryCsv, purchaseOrdersCsv, suppliersCsv } from "./api/csvExport";
+import { initials, useAuth, useDenied } from "./auth";
+import { ROLE_SUMMARY } from "./api/auth";
+import { ChangePasswordDialog, UsersAdmin } from "./components/UsersAdmin";
 
 // The QR decoder is loaded only when the camera is started.
 const QrScanner = lazy(() => import("./components/QrScanner").then((m) => ({ default: m.QrScanner })));
@@ -104,11 +111,36 @@ function Sidebar({ active, onNavigate, open, onClose, lowStockCount, apiStatus }
         {navItems.slice(8).map((item) => <button key={item} className={active === item ? "active" : ""} onClick={() => { onNavigate(item); onClose(); }}><Icon name={navIcons[item]}/><span>{item}</span></button>)}
       </nav>
       <div className="sidebar-footer">
-        <div className="sync-row"><span className="sync-dot" style={apiStatus.state === "online" ? undefined : { background: apiStatus.state === "checking" ? "#9aa5b8" : "#d64545" }}/><div><strong>{apiStatusLabel(apiStatus)}</strong><small>{apiStatus.checkedAt ? `Checked ${checkedTime(apiStatus.checkedAt)} · live data, no offline cache` : "Live data, no offline cache"}</small></div></div>
+        <div className="sync-row"><span className="sync-dot" style={apiStatus.state === "online" ? undefined : { background: apiStatus.state === "checking" ? "#9aa5b8" : "#d64545" }}/><div><strong>{apiStatusLabel(apiStatus)}</strong><small>{apiStatus.state === "offline" ? "Showing saved data · changes disabled" : apiStatus.checkedAt ? `Checked ${checkedTime(apiStatus.checkedAt)} · live data` : "Live data"}</small></div></div>
         <div className="version">ERP workspace · API {apiStatus.version ? `v${apiStatus.version}` : "version unknown"}</div>
       </div>
     </aside>
   </>;
+}
+
+function AccountMenu({ onNavigate }: { onNavigate: (page: PageName) => void }) {
+  const { user, signOut } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [changing, setChanging] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return <div className="account-menu" ref={root}>
+    <button className="profile" aria-haspopup="true" aria-expanded={open} onClick={() => setOpen(!open)}><span className="avatar">{initials(user.display_name)}</span><span className="profile-copy"><strong>{user.display_name}</strong><small>{user.role}</small></span><Icon name="chevron" size={14}/></button>
+    {open && <div className="account-panel" role="menu">
+      <p><strong>{user.display_name}</strong><small>{user.username} · {user.role}</small></p>
+      <button role="menuitem" onClick={() => { setOpen(false); onNavigate("Settings"); }}>Settings</button>
+      <button role="menuitem" onClick={() => { setOpen(false); setChanging(true); }}>Change password</button>
+      <button role="menuitem" onClick={signOut}>Sign out</button>
+    </div>}
+    {changing && <ChangePasswordDialog onClose={() => setChanging(false)} onDone={signOut}/>}
+  </div>;
 }
 
 function Topbar({ onMenu, onNavigate, onSearch, apiStatus, yards, yard, onYard }: { onMenu: () => void; onNavigate: (page: PageName) => void; onSearch: (text: string) => void; apiStatus: ApiStatus; yards: { id: string; name: string }[]; yard: string; onYard: (yard: string) => void }) {
@@ -131,9 +163,9 @@ function Topbar({ onMenu, onNavigate, onSearch, apiStatus, yards, yard, onYard }
     </div>
     <div className="topbar-actions">
       <div className="offline-pill" title={apiStatus.checkedAt ? `Checked at ${checkedTime(apiStatus.checkedAt)}` : undefined}><Icon name={apiStatus.state === "online" ? "check" : "warning"} size={14}/><span>{apiStatusLabel(apiStatus)}</span></div>
-      <Select aria-label="Select yard" title="Filters Inventory and Movements by yard; other pages show all yards" value={yard} onChange={(e) => onYard(e.target.value)}><option value="">All yards</option>{yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select>
+      <Select aria-label="Select yard" title="Filters every page by yard: Dashboard, Inventory, Movements, Procurement (delivery yard), Quality and Audit logs" value={yard} onChange={(e) => onYard(e.target.value)}><option value="">All yards</option>{yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select>
       <AlertsMenu onNavigate={onNavigate}/>
-      <button className="profile" onClick={() => onNavigate("Settings")}><span className="avatar">{CURRENT_USER.initials}</span><span className="profile-copy"><strong>{CURRENT_USER.name}</strong><small>{CURRENT_USER.role}</small></span><Icon name="chevron" size={14}/></button>
+      <AccountMenu onNavigate={onNavigate}/>
     </div>
   </header>;
 }
@@ -152,7 +184,16 @@ function materialKpi(label: string, { data: s, error }: MaterialSummaryState): K
   if (error) return { value: "—", delta: "Unavailable", tone: "neutral", detail: "Material data couldn’t be loaded" };
   if (!s) return { value: "—", delta: "Loading", tone: "neutral", detail: "Loading material counts…" };
   if (label === "Total stock value") {
-    return { value: "—", delta: "No cost data", tone: "neutral", detail: `Across ${s.active_yards.toLocaleString()} active yard${s.active_yards === 1 ? "" : "s"}` };
+    const unvalued = s.unvalued_batches ? ` · ${s.unvalued_batches.toLocaleString()} batch${s.unvalued_batches === 1 ? "" : "es"} without a cost` : "";
+    if (!s.stock_value.length) return { value: "—", delta: "No cost data", tone: "neutral", detail: `No batch has a unit cost yet${unvalued}` };
+    const total = s.stock_value_base;
+    const note = conversionNote(total, formatMoney);
+    return {
+      value: formatMoney(total.amount, total.currency),
+      delta: total.missing_rates.length ? "Partly converted" : total.parts.some((p) => p.currency !== total.currency) ? "Converted to ₹" : "On hand × unit cost",
+      tone: total.missing_rates.length ? "danger" : "neutral",
+      detail: `${note ? `${note} · ` : ""}Across ${s.active_yards.toLocaleString()} active yard${s.active_yards === 1 ? "" : "s"}${unvalued}`,
+    };
   }
   if (label === "Available materials") {
     return {
@@ -184,6 +225,7 @@ function pendingTransfersKpi(summary: TransferSummary | null, error: string): Kp
 const LOW_STOCK_ALERT_ROWS = 3;
 
 function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => void; materials: MaterialSummaryState }) {
+  const { yard } = useYard();
   const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
   const [transferError, setTransferError] = useState("");
   const [lowStock, setLowStock] = useState<{ items: ApiMaterial[]; total: number } | null>(null);
@@ -198,36 +240,38 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
 
   useEffect(() => {
     const controller = new AbortController();
-    getTransferSummary(controller.signal)
+    setTransferSummary(null); setLowStock(null); setShips(null); setDelayed(null);
+    getTransferSummary(controller.signal, yard)
       .then(setTransferSummary)
       .catch((err) => { if (!controller.signal.aborted) setTransferError(err instanceof Error ? err.message : String(err)); });
-    listMaterials({ skip: 0, limit: LOW_STOCK_ALERT_ROWS, status: "Low stock" }, controller.signal)
+    listMaterials({ skip: 0, limit: LOW_STOCK_ALERT_ROWS, status: "Low stock", yard }, controller.signal)
       .then(({ materials: items, total }) => setLowStock({ items, total }))
       .catch((err) => { if (!controller.signal.aborted) setLowStockError(err instanceof Error ? err.message : String(err)); });
-    getShipPrograms(controller.signal)
+    getShipPrograms(controller.signal, yard)
       .then(setShips)
       .catch((err) => { if (!controller.signal.aborted) setShipsError(err instanceof Error ? err.message : String(err)); });
-    listPurchaseOrders({ skip: 0, limit: 200, overdue: true }, controller.signal)
+    listPurchaseOrders({ skip: 0, limit: 200, overdue: true, yard }, controller.signal)
       .then(({ purchase_orders: items, total }) => setDelayed({ items, total }))
       .catch((err) => { if (!controller.signal.aborted) setDelayedError(err instanceof Error ? err.message : String(err)); });
     return () => controller.abort();
-  }, []);
+  }, [yard]);
 
   useEffect(() => {
     const controller = new AbortController();
     setMovements(null);
-    getMovements(months, controller.signal)
+    getMovements(months, controller.signal, yard)
       .then((m) => { setMovements(m); setMovementsError(""); })
       .catch((err) => { if (!controller.signal.aborted) setMovementsError(err instanceof Error ? err.message : String(err)); });
     return () => controller.abort();
-  }, [months]);
+  }, [months, yard]);
 
   const peak = Math.max(1, ...(movements?.months.flatMap((m) => [m.stock_in, m.stock_out]) ?? []));
   const quiet = movements?.months.every((m) => !m.stock_in && !m.stock_out);
   // Most overdue first: the earliest expected delivery among overdue open orders.
   const worst = delayed?.items.reduce<PurchaseOrder | null>((a, b) => (!a || (b.expected_delivery_date ?? "") < (a.expected_delivery_date ?? "") ? b : a), null) ?? null;
+  const { user } = useAuth();
   const hour = new Date().getHours();
-  const greeting = `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${CURRENT_USER.name.split(" ")[0]}`;
+  const greeting = `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${user.display_name.split(" ")[0]}`;
 
   const view = (label: string): KpiView =>
     label === "Pending transfers" ? pendingTransfersKpi(transferSummary, transferError) : materialKpi(label, materials);
@@ -241,6 +285,7 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
   return <>
     <div className="print-only report-heading"><h1>Dashboard report</h1><p>Dockyard Materials Command · printed {printedAt?.toLocaleString()} · figures as loaded on screen at that time</p></div>
     <PageHeader eyebrow="Operations overview" title={greeting} description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download" disabled={stillLoading} title={stillLoading ? "Waiting for the dashboard to finish loading" : "Print the dashboard or save it as a PDF"} onClick={printReport}>Export report</Button><Button icon="plus" onClick={() => onNavigate("Procurement")}>Receive material</Button></>}/>
+    <YardNote what="figures for"/>
     <div className="kpi-grid">
       {DASHBOARD_KPIS.map((kpi, index) => { const v = view(kpi.label); return <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={kpi.icon}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{v.value}</strong><Badge tone={v.tone}>{v.delta}</Badge></div><p title={errorFor(kpi.label)}>{v.detail}</p></Card>; })}
     </div>
@@ -293,6 +338,11 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
 }
 
 function Inventory({ onMaterialsChanged, searchRequest, globalYard }: { onMaterialsChanged: () => void; searchRequest: { text: string; n: number } | null; globalYard: string }) {
+  const denied = useDenied();
+  const [rates, setRates] = useState<Record<string, number>>({ INR: 1 });
+  useEffect(() => { getRates().then((r) => setRates(Object.fromEntries([["INR", 1], ...r.rates.map((x) => [x.currency, Number(x.rate)])]))).catch(() => {}); }, []);
+  const inRupees = (amount: number, currency: string | null) =>
+    currency && currency !== "INR" && rates[currency] ? ` ≈ ${formatMoney(amount * rates[currency], "INR")}` : "";
   const [query, setQuery] = useState(searchRequest?.text ?? "");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
@@ -371,7 +421,7 @@ function Inventory({ onMaterialsChanged, searchRequest, globalYard }: { onMateri
   };
   const firstShown = total === 0 ? 0 : skip + 1;
   return <>
-    <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" disabled={exporting} title="Download the materials matching the current filters as CSV" onClick={exportCsv}>{exporting ? "Exporting…" : "Export"}</Button><Button icon="plus" onClick={() => setDialog({})}>Add material</Button></>}/>
+    <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" disabled={exporting} title="Download the materials matching the current filters as CSV" onClick={exportCsv}>{exporting ? "Exporting…" : "Export"}</Button><Button icon="plus" disabled={!!denied("inventory")} title={denied("inventory")} onClick={() => setDialog({})}>Add material</Button></>}/>
     <Card className="table-card">
       <div className="table-toolbar">
         <Input icon="search" placeholder="Search by material ID, name or batch…" value={query} onChange={(e) => setQuery(e.target.value)}/>
@@ -389,7 +439,7 @@ function Inventory({ onMaterialsChanged, searchRequest, globalYard }: { onMateri
         {filtered && <Button variant="ghost" onClick={clearFilters}>Clear all</Button>}
       </div>}
       {state === "error" && <div className="notice" role="alert"><Icon name="warning"/>{loadError}</div>}
-      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved{item.held_quantity ? ` · ${item.held_quantity} on inspection hold` : ""}</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`QR label for ${item.id}`} title="Print QR label" onClick={() => setLabelFor(item)}><Icon name="qr"/></button><button className="icon-button" aria-label={`Edit ${item.id}`} title="Edit or delete" onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
+      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved{item.held_quantity ? ` · ${item.held_quantity} on inspection hold` : ""}</small><small className="value-line">{item.unit_cost == null ? "Not valued" : `${formatMoney(Number(item.unit_cost) * item.quantity, item.cost_currency)}${inRupees(Number(item.unit_cost) * item.quantity, item.cost_currency)} · ${formatMoney(item.unit_cost, item.cost_currency)}/${item.unit}`}</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`QR label for ${item.id}`} title="Print QR label" onClick={() => setLabelFor(item)}><Icon name="qr"/></button><button className="icon-button" aria-label={`Edit ${item.id}`} title={denied("inventory") ?? "Edit or delete"} disabled={!!denied("inventory")} onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
       <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} materials${pageOf(skip, total, INVENTORY_PAGE_SIZE)}` : `${total} materials`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - INVENTORY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + INVENTORY_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     {labelFor && <QrLabelDialog material={labelFor} onClose={() => setLabelFor(null)}/>}
@@ -404,6 +454,49 @@ const pageOf = (skip: number, total: number, size: number) =>
 
 const YARD_KEY = "dockyard.yard";
 
+/** Shown while the API cannot be reached and saved data is on screen. */
+function OfflineBanner() {
+  const [state, setState] = useState<Connectivity>(connectivity);
+  useEffect(() => {
+    const on = (e: Event) => setState((e as CustomEvent<Connectivity>).detail);
+    window.addEventListener(OFFLINE_EVENT, on);
+    return () => window.removeEventListener(OFFLINE_EVENT, on);
+  }, []);
+  if (!state.offline) return null;
+  const when = state.dataFrom ? new Date(state.dataFrom).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
+  return <div className="notice offline-banner" role="status"><Icon name="wifiOff"/><span><strong>Offline.</strong> {when ? `Showing data saved in this browser at ${when}.` : "The server cannot be reached."} Changes are disabled until the connection returns; pages you haven’t opened before can’t be shown.</span></div>;
+}
+
+/** Downloads every row matching the current filters as CSV, with a short result message. */
+function ExportButton({ label = "Export", noun, filename, run }: { label?: string; noun: [string, string]; filename: string; run: () => Promise<{ csv: string; count: number }> }) {
+  const [busy, setBusy] = useState(false);
+  const [toast, showToast] = useToast();
+  const click = async () => {
+    setBusy(true);
+    try {
+      const { csv, count } = await run();
+      if (count === 0) { showToast(`No ${noun[1]} match the current filters`); return; }
+      downloadCsv(csv, `${filename}-${new Date().toISOString().slice(0, 10)}.csv`);
+      showToast(`Exported ${count} ${count === 1 ? noun[0] : noun[1]}`);
+    } catch (err) {
+      showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <><Button variant="secondary" icon="download" disabled={busy} title={`Download the ${noun[1]} matching the current filters as CSV`} onClick={click}>{busy ? "Exporting…" : label}</Button><Toast message={toast}/></>;
+}
+
+/** The yard chosen in the top bar ("" for all yards), shared by every page that can filter by yard. */
+const YardContext = createContext<{ yard: string; name: string; set: (yard: string) => void }>({ yard: "", name: "", set: () => {} });
+const useYard = () => useContext(YardContext);
+
+function YardNote({ what }: { what: string }) {
+  const { yard, name, set } = useYard();
+  if (!yard) return null;
+  return <div className="notice yard-notice"><Icon name="filter"/><span>Showing {what} <strong>{name}</strong>, the yard selected in the top bar.</span><Button variant="ghost" onClick={() => set("")}>Show all yards</Button></div>;
+}
+
 const MOVEMENT_ACTION: Partial<Record<TransferStatus, string>> = { Requested: "Review", Approved: "Dispatch", Dispatched: "Receive" };
 
 const formatMoment = (iso: string) =>
@@ -415,6 +508,7 @@ const ledgerQuantity = (type: string, quantity: number, reference: string | null
   type === "Adjustment" && !reference ? (quantity > 0 ? `+${quantity}` : quantity < 0 ? `−${-quantity}` : "0") : String(quantity);
 
 function Movements({ globalYard, yardName, onAllYards }: { globalYard: string; yardName: string; onAllYards: () => void }) {
+  const denied = useDenied();
   const [tab, setTab] = useState(MOVEMENT_TABS[0]);
   const [skip, setSkip] = useState(0);
   const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
@@ -440,7 +534,7 @@ function Movements({ globalYard, yardName, onAllYards }: { globalYard: string; y
   useEffect(() => {
     const controller = new AbortController();
     setState("loading");
-    getTransferSummary(controller.signal).then(setSummary).catch(() => { if (!controller.signal.aborted) setSummary(null); });
+    getTransferSummary(controller.signal, globalYard).then(setSummary).catch(() => { if (!controller.signal.aborted) setSummary(null); });
     listTransfers(tab.statuses, { skip, limit: MOVEMENT_PAGE_SIZE, yard: globalYard }, controller.signal)
       .then(({ transfers, total: count }) => {
         setItems(transfers);
@@ -472,9 +566,9 @@ function Movements({ globalYard, yardName, onAllYards }: { globalYard: string; y
     ["Received this week", kpi(summary?.received_this_week), "success"],
   ];
 
-  return <><PageHeader eyebrow="Material logistics" title="Movements" description="Approve, dispatch and receive transfers between yards." actions={<Button icon="plus" onClick={() => setCreating(true)}>Create transfer</Button>}/>
-    <div className="mini-kpis">{cards.map(([label, value, tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={globalYard ? "neutral" : tone}>{globalYard ? "All yards" : "Live queue"}</Badge></Card>)}</div>
-    {globalYard && <div className="notice yard-notice"><Icon name="filter"/><span>Showing transfers from or to <strong>{yardName}</strong>, the yard selected in the top bar. The queue figures above cover all yards.</span><Button variant="ghost" onClick={onAllYards}>Show all yards</Button></div>}
+  return <><PageHeader eyebrow="Material logistics" title="Movements" description="Approve, dispatch and receive transfers between yards." actions={<Button icon="plus" disabled={!!denied("transfers")} title={denied("transfers")} onClick={() => setCreating(true)}>Create transfer</Button>}/>
+    <div className="mini-kpis">{cards.map(([label, value, tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={tone}>Live queue</Badge></Card>)}</div>
+    {globalYard && <div className="notice yard-notice"><Icon name="filter"/><span>Showing transfers from or to <strong>{yardName}</strong>, the yard selected in the top bar.</span><Button variant="ghost" onClick={onAllYards}>Show all yards</Button></div>}
     <Card className="table-card"><div className="tabs">{MOVEMENT_TABS.map(item => <button className={tab.label === item.label ? "active" : ""} onClick={() => { setTab(item); setSkip(0); }} key={item.label}>{item.label}</button>)}</div>
       {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
       {state !== "ready"
@@ -501,11 +595,21 @@ type Lookup =
 
 const HISTORY_ROWS = 15;
 
-function QRTracking() {
+function QRTracking({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   const [lookup, setLookup] = useState("");
   const [result, setResult] = useState<Lookup>({ phase: "idle" });
   const [scanning, setScanning] = useState(false);
   const [label, setLabel] = useState<ApiMaterial | null>(null);
+  // Work started from the batch on screen (typically one just scanned).
+  const [action, setAction] = useState<"transfer" | "hold" | "edit" | null>(null);
+  const [refs, setRefs] = useState<ReferenceData | null>(null);
+  const [refsError, setRefsError] = useState("");
+  const [toast, showToast] = useToast();
+  const denied = useDenied();
+  const start = (kind: "transfer" | "hold" | "edit") => {
+    if (kind !== "hold" && !refs) getReferenceData().then(setRefs).catch((err) => setRefsError(`Yards and locations could not be loaded: ${err.message}`));
+    setAction(kind);
+  };
 
   const show = async (material: ApiMaterial) => {
     setResult({ phase: "found", material, history: null, historyTotal: 0, historyError: "" });
@@ -541,6 +645,13 @@ function QRTracking() {
   const onScan = (text: string) => { setScanning(false); setLookup(text); runLookup(text); };
 
   const m = result.phase === "found" ? result.material : null;
+  // After an action, show the batch's new figures and history (or clear it if it was deleted).
+  const afterAction = (message: string) => {
+    setAction(null);
+    showToast(message);
+    onMaterialsChanged();
+    if (m) getMaterial(m.id).then(show).catch(() => setResult({ phase: "idle" }));
+  };
   const last = result.phase === "found" ? result.history?.[0] : undefined;
   return <><PageHeader eyebrow="Traceability" title="QR tracking" description="Look up material identity, custody and allocation records."/>
     <div className="two-column"><Card className="scanner-card">{scanning
@@ -552,7 +663,12 @@ function QRTracking() {
       {result.phase === "choose" && <div className="material-detail"><p>{result.total > result.matches.length ? `Showing the first ${result.matches.length} of ${result.total} matches — refine the search or choose one` : `${result.total} batches match — choose one`}</p><div className="alert-list">{result.matches.map((c) => <button type="button" className="alert-row" key={c.id} onClick={() => show(c)}><span className="severity warning"><Icon name="box" size={16}/></span><span><strong>{c.name}</strong><small>{c.id} · Lot {c.batch} · {c.yard.name}</small></span><span className="alert-amount">{c.available} {c.unit} available<Icon name="chevron" size={14}/></span></button>)}</div></div>}
       {m ? <div className="material-detail">
         <Badge tone={statusTone(m.status)}>{m.status}</Badge><h3>{m.name}</h3><p>{m.id} · Batch {m.batch} · {m.category.name}</p>
-        <div style={{ marginTop: 10 }}><Button type="button" variant="secondary" icon="qr" onClick={() => setLabel(m)}>Print label</Button></div>
+        <div className="scan-actions">
+          <Button type="button" variant="secondary" icon="qr" onClick={() => setLabel(m)}>Print label</Button>
+          <Button type="button" variant="secondary" icon="movement" disabled={!!denied("transfers") || m.available === 0} title={denied("transfers") ?? (m.available === 0 ? "No available stock to move" : "Move stock from this batch to another yard or location")} onClick={() => start("transfer")}>Create transfer</Button>
+          <Button type="button" variant="secondary" icon="warning" disabled={!!denied("hold") || m.available === 0} title={denied("hold") ?? (m.available === 0 ? "No available stock to hold" : "Hold part of this batch for inspection")} onClick={() => start("hold")}>Hold for inspection</Button>
+          <Button type="button" variant="secondary" icon="more" disabled={!!denied("inventory")} title={denied("inventory") ?? "Edit details or adjust stock"} onClick={() => start("edit")}>Edit / adjust stock</Button>
+        </div>
         <dl>
           <div><dt>Available</dt><dd>{m.available} {m.unit}</dd></div>
           <div><dt>On hand</dt><dd>{m.quantity} {m.unit}{m.reserved ? ` · ${m.reserved} reserved` : ""}{m.held_quantity ? ` · ${m.held_quantity} on inspection hold` : ""}</dd></div>
@@ -566,6 +682,10 @@ function QRTracking() {
       </div> : (result.phase === "idle" || result.phase === "searching" || result.phase === "none") && <div className="lookup-empty"><Icon name="qr" size={28}/><strong>{result.phase === "none" ? result.message : "Awaiting batch ID"}</strong><span>Material details and custody history will appear here.</span></div>}
     </Card></div>
     {label && <QrLabelDialog material={label} onClose={() => setLabel(null)}/>}
+    {m && action === "transfer" && <TransferDialog initialSource={m} refs={refs} refsError={refsError} onClose={() => setAction(null)} onDone={afterAction}/>}
+    {m && action === "hold" && <NewInspectionDialog initialBatchId={m.id} onClose={() => setAction(null)} onDone={afterAction}/>}
+    {m && action === "edit" && <MaterialDialog material={m} refs={refs} refsError={refsError} onClose={() => setAction(null)} onDone={afterAction}/>}
+    <Toast message={toast}/>
   </>;
 }
 
@@ -587,6 +707,7 @@ function deliveryNote(po: PurchaseOrder) {
 }
 
 function ProcurementOrders({ suppliers, reloadKey, onOpen }: { suppliers: Supplier[]; reloadKey: number; onOpen: (id: number) => void }) {
+  const { yard } = useYard();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [supplierId, setSupplierId] = useState("");
@@ -606,11 +727,13 @@ function ProcurementOrders({ suppliers, reloadKey, onOpen }: { suppliers: Suppli
   useEffect(() => {
     const controller = new AbortController();
     setState("loading");
-    listPurchaseOrders({ skip, limit: PROCUREMENT_PAGE_SIZE, search, supplierId, status: statusFilter || undefined }, controller.signal)
+    listPurchaseOrders({ skip, limit: PROCUREMENT_PAGE_SIZE, search, supplierId, status: statusFilter || undefined, yard }, controller.signal)
       .then(({ purchase_orders, total: count }) => { setItems(purchase_orders); setTotal(count); setState(purchase_orders.length ? "ready" : "empty"); })
       .catch((err) => { if (!controller.signal.aborted) { setLoadError(err instanceof Error ? err.message : String(err)); setState("error"); } });
     return () => controller.abort();
-  }, [skip, search, supplierId, statusFilter, reloadKey, retryKey]);
+  }, [skip, search, supplierId, statusFilter, reloadKey, retryKey, yard]);
+
+  useEffect(() => setSkip(0), [yard]);
 
   const firstShown = total === 0 ? 0 : skip + 1;
   return <>
@@ -619,6 +742,7 @@ function ProcurementOrders({ suppliers, reloadKey, onOpen }: { suppliers: Suppli
       <div className="toolbar-filters">
         <Select aria-label="Filter by supplier" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setSkip(0); }}><option value="">All suppliers</option>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select>
         <Select aria-label="Filter by status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as PurchaseOrderStatus | ""); setSkip(0); }}><option value="">All statuses</option>{PURCHASE_ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}</Select>
+        <ExportButton noun={["purchase order", "purchase orders"]} filename="purchase-orders" run={() => purchaseOrdersCsv({ search, supplierId, status: statusFilter || undefined, yard })}/>
       </div>
     </div>
     {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
@@ -640,6 +764,7 @@ function ProcurementOrders({ suppliers, reloadKey, onOpen }: { suppliers: Suppli
 }
 
 function ProcurementSuppliers({ reloadKey, onEdit }: { reloadKey: number; onEdit: (supplier?: Supplier) => void }) {
+  const denied = useDenied();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SupplierStatus | "">("");
@@ -670,7 +795,8 @@ function ProcurementSuppliers({ reloadKey, onEdit }: { reloadKey: number; onEdit
       <Input icon="search" placeholder="Search by ID, name, contact or country…" value={query} onChange={(e) => setQuery(e.target.value)}/>
       <div className="toolbar-filters">
         <Select aria-label="Filter by supplier status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value as SupplierStatus | ""); setSkip(0); }}><option value="">All statuses</option>{SUPPLIER_STATUSES.map((s) => <option key={s}>{s}</option>)}</Select>
-        <Button variant="secondary" icon="plus" onClick={() => onEdit()}>Add supplier</Button>
+        <ExportButton noun={["supplier", "suppliers"]} filename="suppliers" run={() => suppliersCsv({ search, status: statusFilter || undefined })}/>
+        <Button variant="secondary" icon="plus" disabled={!!denied("procurement")} title={denied("procurement")} onClick={() => onEdit()}>Add supplier</Button>
       </div>
     </div>
     {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
@@ -681,13 +807,15 @@ function ProcurementSuppliers({ reloadKey, onEdit }: { reloadKey: number; onEdit
         <td><strong>{s.contact_person ?? "—"}</strong><small>{[s.contact_email, s.contact_phone].filter(Boolean).join(" · ") || "No contact details"}</small></td>
         <td><strong>{s.country ?? "—"}</strong></td>
         <td><Badge tone={supplierTone(s.status)}>{s.status}</Badge></td>
-        <td><button className="icon-button" aria-label={`Edit ${s.id}`} title="Edit supplier" onClick={() => onEdit(s)}><Icon name="more"/></button></td>
+        <td><button className="icon-button" aria-label={`Edit ${s.id}`} title={denied("procurement") ?? "Edit supplier"} disabled={!!denied("procurement")} onClick={() => onEdit(s)}><Icon name="more"/></button></td>
       </tr>)}</tbody></table></div>}
     <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} suppliers${pageOf(skip, total, PROCUREMENT_PAGE_SIZE)}` : `${total} suppliers`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
   </>;
 }
 
 function Procurement({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
+  const { yard } = useYard();
+  const denied = useDenied();
   const [tab, setTab] = useState<"orders" | "suppliers">("orders");
   const [refs, setRefs] = useState<ReferenceData | null>(null);
   const [refsError, setRefsError] = useState("");
@@ -710,14 +838,14 @@ function Procurement({ onMaterialsChanged }: { onMaterialsChanged: () => void })
 
   useEffect(() => {
     const controller = new AbortController();
-    getPurchaseOrderSummary(controller.signal)
+    getPurchaseOrderSummary(controller.signal, yard)
       .then((s) => { setSummary(s); setSummaryError(""); })
       .catch((err) => { if (!controller.signal.aborted) { setSummary(null); setSummaryError(err instanceof Error ? err.message : String(err)); } });
     listSuppliers({ skip: 0, limit: 200 }, controller.signal)
       .then(({ suppliers: all }) => setSuppliers(all))
       .catch(() => { if (!controller.signal.aborted) setSuppliers([]); });
     return () => controller.abort();
-  }, [reloadKey]);
+  }, [reloadKey, yard]);
 
   const changed = useCallback((message: string) => {
     showToast(message);
@@ -727,17 +855,17 @@ function Procurement({ onMaterialsChanged }: { onMaterialsChanged: () => void })
 
   const live = (value: number | undefined) => (summary ? String(value) : "—");
   const badge = summaryError ? "Unavailable" : summary ? "Live" : "Loading";
-  const [firstValue, ...otherValues] = summary?.open_value ?? [];
-  const openValue = !summary ? "—" : firstValue ? formatMoney(firstValue.amount, firstValue.currency) : formatMoney(0, null);
+  const openValue = !summary ? "—" : formatMoney(summary.open_value_base.amount, summary.open_value_base.currency);
   const cards: [string, string, string, "info" | "purple" | "warning" | "danger"][] = [
-    ["Open PO value", openValue, otherValues.length ? `+${otherValues.length} currenc${otherValues.length === 1 ? "y" : "ies"}` : badge, "info"],
+    ["Open PO value", openValue, summary?.open_value_base.missing_rates.length ? "Partly converted" : summary?.open_value_base.parts.some((p) => p.currency !== "INR") ? "Converted to ₹" : badge, "info"],
     ["Due this week", live(summary?.due_this_week), badge, "purple"],
     ["Partial receipts", live(summary?.partially_received), badge, "warning"],
     ["Overdue orders", live(summary?.overdue), badge, "danger"],
   ];
 
-  return <><PageHeader eyebrow="Supply chain" title="Procurement" description="Monitor suppliers, purchase orders and inbound delivery performance." actions={<Button icon="plus" onClick={() => setCreating(true)}>New purchase order</Button>}/>
-    <div className="mini-kpis">{cards.map(([label, value, b, tone]) => <Card key={label}><span>{label}</span><strong title={label === "Open PO value" && otherValues.length ? summary!.open_value.map((v) => formatMoney(v.amount, v.currency)).join(" · ") : undefined}>{value}</strong><Badge tone={b === "Unavailable" || b === "Loading" ? "neutral" : tone}>{b}</Badge></Card>)}</div>
+  return <><PageHeader eyebrow="Supply chain" title="Procurement" description="Monitor suppliers, purchase orders and inbound delivery performance." actions={<Button icon="plus" disabled={!!denied("procurement")} title={denied("procurement")} onClick={() => setCreating(true)}>New purchase order</Button>}/>
+    <YardNote what="purchase orders delivered to"/>
+    <div className="mini-kpis">{cards.map(([label, value, b, tone]) => <Card key={label}><span>{label}</span><strong title={label === "Open PO value" && summary ? conversionNote(summary.open_value_base, formatMoney) || undefined : undefined}>{value}</strong><Badge tone={b === "Unavailable" || b === "Loading" ? "neutral" : tone}>{b}</Badge></Card>)}</div>
     <Card className="table-card">
       <div className="tabs"><button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>Purchase orders</button><button className={tab === "suppliers" ? "active" : ""} onClick={() => setTab("suppliers")}>Suppliers</button></div>
       {tab === "orders"
@@ -816,7 +944,7 @@ function Analytics({ onNavigate }: { onNavigate: (page: PageName) => void }) {
 }
 
 type AssistantAnswer = { title: string; summary: string; columns?: string[]; rows?: string[][]; source: string; page?: PageName };
-type AssistantTurn = { id: number; question: string; answer?: AssistantAnswer; error?: string };
+type AssistantTurn = { id: number; question: string; answer?: AssistantAnswer; ai?: AiAnswer; error?: string };
 
 const ASSISTANT_QUESTIONS = [
   "Which batches are flagged Low stock?",
@@ -894,15 +1022,29 @@ function Assistant({ onNavigate }: { onNavigate: (page: PageName) => void }) {
   const [turns, setTurns] = useState<AssistantTurn[]>([]);
   const [busy, setBusy] = useState(false);
   const counter = useRef(0);
+  // Claude answers when the backend has an API key; otherwise the fixed rules below do.
+  const [ai, setAi] = useState<AssistantStatus | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    getAssistantStatus(controller.signal).then(setAi).catch(() => setAi({ enabled: false, model: null, tools: [] }));
+    return () => controller.abort();
+  }, []);
+  const aiOn = Boolean(ai?.enabled);
 
   const ask = async (text: string) => {
     const asked = text.trim();
     if (!asked || busy) return;
     const id = ++counter.current;
+    const history: Turn[] = turns.flatMap((t) => t.ai ? [{ role: "user" as const, content: t.question }, { role: "assistant" as const, content: t.ai.answer }] : []);
     setTurns((t) => [...t, { id, question: asked }]);
     setQuestion("");
     setBusy(true);
     try {
+      if (aiOn) {
+        const reply = await askAssistant(asked, history);
+        setTurns((t) => t.map((x) => (x.id === id ? { ...x, ai: reply } : x)));
+        return;
+      }
       const answer = await answerQuestion(asked);
       setTurns((t) => t.map((x) => (x.id === id ? { ...x, answer } : x)));
     } catch (err) {
@@ -912,13 +1054,16 @@ function Assistant({ onNavigate }: { onNavigate: (page: PageName) => void }) {
     }
   };
 
-  return <><PageHeader eyebrow="Operations assistant" title="Assistant" description="Answers a fixed set of operational questions from live data. It is not an AI model." actions={<Badge tone="neutral">Rule-based</Badge>}/>
+  return <><PageHeader eyebrow="Operations assistant" title="Assistant" description={aiOn ? "Ask anything about stock, transfers, orders, suppliers and inspections. Claude answers by reading live records; it cannot change anything." : "Answers a fixed set of operational questions from live data. It is not an AI model."} actions={<Badge tone={aiOn ? "purple" : "neutral"}>{ai === null ? "Checking…" : aiOn ? `AI · ${ai.model}` : "Rule-based"}</Badge>}/>
     <div className="assistant-layout"><Card className="assistant-main">
       {turns.length === 0 && <div className="chat-intro"><span className="ai-mark large"><Icon name="assistant" size={26}/></span><h2>Materials operations assistant</h2><p>Ask about low stock, overdue orders, transfers, inspections, supplier performance or a batch ID. Questions are matched to fixed rules and answered straight from live records; anything else gets a list of what I can answer.</p></div>}
       {turns.length > 0 && <div className="chat-thread">{turns.map((turn) => <div key={turn.id} style={{ marginBottom: 18 }}>
         <div className="user-message">{turn.question}</div>
         <div className="assistant-message">
-          {!turn.answer && !turn.error && <p>Reading live data…</p>}
+          {!turn.answer && !turn.ai && !turn.error && <p>{aiOn ? "Claude is looking this up…" : "Reading live data…"}</p>}
+          {turn.ai && <><div className="answer-heading"><Icon name="sparkles"/><strong>Answer</strong><Badge tone="purple">Claude · live data</Badge></div>
+            <p className="ai-answer">{turn.ai.answer}</p>
+            <small className="answer-note">{turn.ai.tools_used.length ? `Looked up: ${[...new Set(turn.ai.tools_used.map((u) => u.tool.replace(/_/g, " ")))].join(", ")}` : "Answered without looking anything up"} · AI answers can be wrong; check the records before acting.</small></>}
           {turn.error && <><div className="answer-heading"><Icon name="warning"/><strong>Couldn’t read the data</strong></div><p>{turn.error}</p></>}
           {turn.answer && <><div className="answer-heading"><Icon name="assistant"/><strong>{turn.answer.title}</strong><Badge tone="neutral">Live data</Badge></div>
             <p>{turn.answer.summary}</p>
@@ -928,7 +1073,9 @@ function Assistant({ onNavigate }: { onNavigate: (page: PageName) => void }) {
       </div>)}</div>}
       <form className="composer" onSubmit={(e) => { e.preventDefault(); ask(question); }}><Input aria-label="Ask a question" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about stock, orders, transfers or inspections…" disabled={busy}/><Button type="submit" icon="arrow" disabled={busy || !question.trim()}>Ask</Button></form>
     </Card>
-    <Card className="suggested-card"><h2>Questions I can answer</h2><p>Each one reads live records</p>{ASSISTANT_QUESTIONS.map((q) => <button key={q} onClick={() => ask(q)} disabled={busy}><span>{q}</span><Icon name="arrow"/></button>)}<div className="privacy-note"><Icon name="lock"/><span><strong>No AI model</strong><small>Questions are matched to fixed rules in your browser; answers come from the Dockyard API.</small></span></div></Card></div>
+    <Card className="suggested-card"><h2>{aiOn ? "Try asking" : "Questions I can answer"}</h2><p>Each one reads live records</p>{ASSISTANT_QUESTIONS.map((q) => <button key={q} onClick={() => ask(q)} disabled={busy}><span>{q}</span><Icon name="arrow"/></button>)}<div className="privacy-note"><Icon name="lock"/>{aiOn
+      ? <span><strong>Answered by Claude (Anthropic)</strong><small>Your question and the records it looks up are sent to Anthropic's API. It can only read; changes are made on the other pages.</small></span>
+      : <span><strong>No AI model</strong><small>Questions are matched to fixed rules in your browser; answers come from the Dockyard API. An admin can connect Claude by adding ANTHROPIC_API_KEY to the backend.</small></span>}</div></Card></div>
   </>;
 }
 
@@ -1030,6 +1177,8 @@ function ShipsYards({ onNavigate }: { onNavigate: (page: PageName) => void }) {
 const QUALITY_PAGE_SIZE = 25;
 
 function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
+  const { yard } = useYard();
+  const denied = useDenied();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<InspectionStatus | "">("Open");
@@ -1053,10 +1202,10 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   useEffect(() => {
     const controller = new AbortController();
     setState("loading");
-    getInspectionSummary(controller.signal)
+    getInspectionSummary(controller.signal, yard)
       .then((s) => { setSummary(s); setSummaryError(""); })
       .catch((err) => { if (!controller.signal.aborted) { setSummary(null); setSummaryError(err instanceof Error ? err.message : String(err)); } });
-    listInspections({ skip, limit: QUALITY_PAGE_SIZE, search, status: statusFilter || undefined }, controller.signal)
+    listInspections({ skip, limit: QUALITY_PAGE_SIZE, search, status: statusFilter || undefined, yard }, controller.signal)
       .then(({ inspections, total: count }) => {
         setItems(inspections);
         setTotal(count);
@@ -1068,7 +1217,9 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
         setState("error");
       });
     return () => controller.abort();
-  }, [skip, search, statusFilter, reloadKey]);
+  }, [skip, search, statusFilter, reloadKey, yard]);
+
+  useEffect(() => setSkip(0), [yard]);
 
   const done = useCallback((message: string) => {
     setOpenId(null);
@@ -1088,7 +1239,8 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   ];
   const firstShown = total === 0 ? 0 : skip + 1;
 
-  return <><PageHeader eyebrow="Material assurance" title="Quality inspections" description="Release or reject stock held for inspection, on receipt or from inventory." actions={<Button icon="plus" title="Hold part of a batch's available stock for inspection" onClick={() => setCreating(true)}>New inspection</Button>}/>
+  return <><PageHeader eyebrow="Material assurance" title="Quality inspections" description="Release or reject stock held for inspection, on receipt or from inventory." actions={<><ExportButton noun={["inspection", "inspections"]} filename="inspections" run={() => inspectionsCsv({ search, status: statusFilter || undefined, yard })}/><Button icon="plus" disabled={!!denied("hold")} title={denied("hold") ?? "Hold part of a batch's available stock for inspection"} onClick={() => setCreating(true)}>New inspection</Button></>}/>
+    <YardNote what="inspections of batches in"/>
     <div className="mini-kpis">{cards.map(([l, v, badge, t]) => <Card key={l}><span>{l}</span><strong>{v}</strong><Badge tone={badge === "Live" ? t : "neutral"}>{badge}</Badge></Card>)}</div>
     <Card className="table-card">
       <div className="table-toolbar">
@@ -1129,6 +1281,7 @@ function auditQuantity(e: AuditEvent) {
 }
 
 function AuditLogs() {
+  const { yard } = useYard();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<AuditSource | "">("");
@@ -1154,11 +1307,13 @@ function AuditLogs() {
     if (rangeError) return;
     const controller = new AbortController();
     setState("loading");
-    listAuditEvents({ skip, limit: AUDIT_PAGE_SIZE, search, source: source || undefined, dateFrom, dateTo }, controller.signal)
+    listAuditEvents({ skip, limit: AUDIT_PAGE_SIZE, search, source: source || undefined, dateFrom, dateTo, yard }, controller.signal)
       .then(({ events, total: count }) => { setItems(events); setTotal(count); setState(events.length ? "ready" : "empty"); })
       .catch((err) => { if (!controller.signal.aborted) { setLoadError(err instanceof Error ? err.message : String(err)); setState("error"); } });
     return () => controller.abort();
-  }, [skip, search, source, dateFrom, dateTo, retryKey, rangeError]);
+  }, [skip, search, source, dateFrom, dateTo, retryKey, rangeError, yard]);
+
+  useEffect(() => setSkip(0), [yard]);
 
   const filtered = Boolean(search || source || dateFrom || dateTo);
   const firstShown = total === 0 ? 0 : skip + 1;
@@ -1166,7 +1321,7 @@ function AuditLogs() {
   const exportCsv = async () => {
     setExporting(true);
     try {
-      const { csv, count } = await auditCsv({ search, source: source || undefined, dateFrom, dateTo });
+      const { csv, count } = await auditCsv({ search, source: source || undefined, dateFrom, dateTo, yard });
       if (count === 0) { showToast("No events match the current filters"); return; }
       downloadCsv(csv, `audit-log-${new Date().toISOString().slice(0, 10)}.csv`);
       showToast(`Exported ${count} event${count === 1 ? "" : "s"}`);
@@ -1177,6 +1332,7 @@ function AuditLogs() {
     }
   };
   return <><PageHeader eyebrow="Traceable operations" title="Audit logs" description="Recorded stock, transfer, purchase-order and inspection activity, newest first." actions={<Button variant="secondary" icon="download" disabled={exporting || Boolean(rangeError)} title="Download the events matching the current filters as CSV" onClick={exportCsv}>{exporting ? "Exporting…" : "Export log"}</Button>}/>
+    <YardNote what="events for batches in, transfers from or to, and orders delivered to"/>
     <Card className="audit-card">
       <div className="table-toolbar">
         <Input icon="search" aria-label="Search audit events" placeholder="Search batch, material, PO-/TR-/QI-/GR- number, actor or reason…" value={query} onChange={(e) => setQuery(e.target.value)}/>
@@ -1212,30 +1368,40 @@ function SettingsRow({ icon, title, detail, badge, tone = "neutral" }: { icon: I
 
 function Settings({ apiStatus }: { apiStatus: ApiStatus }) {
   const [tab, setTab] = useState<(typeof SETTINGS_TABS)[number]>("General");
+  const { user, can } = useAuth();
+  const [ai, setAi] = useState<AssistantStatus | null>(null);
+  const [emailOn, setEmailOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    getAssistantStatus().then(setAi).catch(() => {});
+    listNotifications().then((n) => setEmailOn(n.email_enabled)).catch(() => {});
+  }, []);
   const apiTone = apiStatus.state === "online" ? "success" as const : apiStatus.state === "checking" ? "neutral" as const : "danger" as const;
-  return <><PageHeader eyebrow="Workspace administration" title="Settings" description="What this workspace is running with. Settings can’t be changed from here yet."/>
+  return <><PageHeader eyebrow="Workspace administration" title="Settings" description="What this workspace is running with, and user accounts for admins."/>
     <div className="settings-layout">
       <Card className="settings-nav">{SETTINGS_TABS.map((t) => <button className={tab === t ? "active" : ""} onClick={() => setTab(t)} key={t}><Icon name={t === "Roles & access" ? "users" : t === "Offline sync" ? "wifiOff" : "settings"}/>{t}</button>)}</Card>
       <Card className="settings-panel"><h2>{tab}</h2>
-        {tab === "General" && <><p>Read from the running system. There is no settings storage yet, so nothing here can be saved.</p><div className="role-list">
-          <SettingsRow icon="users" title={`${CURRENT_USER.name} · ${CURRENT_USER.role}`} detail="Prototype identity used as the actor on every change — there is no sign-in yet" badge="Not verified" tone="warning"/>
+        {tab === "General" && <><ExchangeRates canEdit={can("users")}/><p>Read from the running system. There is no settings storage yet, so nothing here can be saved.</p><div className="role-list">
+          <SettingsRow icon="users" title={`${user.display_name} · ${user.role}`} detail={`Signed in as ${user.username}. Every change you make is recorded under this name.`} badge="Signed in" tone="success"/>
           <SettingsRow icon="settings" title="API address" detail={API_BASE_URL} badge={apiStatusLabel(apiStatus)} tone={apiTone}/>
+          <SettingsRow icon="analytics" title="Currency: Indian rupee (₹, INR)" detail="Totals are shown in rupees. Amounts in other currencies keep their own currency and are converted with the rates below." badge="Base currency" tone="success"/>
           <SettingsRow icon="settings" title="API version" detail={apiStatus.version ? `v${apiStatus.version}` : "Unknown until the API responds"} badge={apiStatus.checkedAt ? `Checked ${checkedTime(apiStatus.checkedAt)}` : "Checking"}/>
         </div></>}
-        {tab === "Roles & access" && <><p>Access control isn’t implemented yet.</p><div className="role-list">
-          <SettingsRow icon="lock" title="No sign-in or roles" detail={`Everyone can use every page. Changes are recorded under the name ${CURRENT_USER.name}; names are not verified.`} badge="Not available" tone="warning"/>
-        </div></>}
-        {tab === "Notifications" && <><p>The bell in the top bar lists work that needs attention, read live from current records every minute and whenever it is opened. Nothing is stored, sent or marked as read.</p><div className="role-list">
-          <SettingsRow icon="bell" title="Live alerts" detail="Low-stock batches, overdue purchase orders, inspections awaiting a decision, transfers to approve, dispatch or receive" badge="Available" tone="success"/>
-          <SettingsRow icon="warning" title="Email and stored notifications" detail="Nothing is sent or queued; there is no read/unread history" badge="Not available" tone="warning"/>
+        {tab === "Roles & access" && <><p>Everyone signs in. Every signed-in user can read every page; what they can change depends on their role.</p><div className="role-list">
+          <SettingsRow icon="lock" title={`Your role: ${user.role}`} detail={ROLE_SUMMARY[user.role]} badge="Signed in" tone="success"/>
+        </div>{can("users") ? <UsersAdmin/> : <p className="muted-copy">Only admins can add users or change roles.</p>}</>}
+        {tab === "Notifications" && <><p>Events are stored as notifications for the roles that handle them, with read/unread per user, and shown under the bell with a live “Needs attention” list.</p><div className="role-list">
+          <SettingsRow icon="bell" title="In-app notifications" detail="Batch flagged Low stock (Storekeeper, Procurement, Admin) · inspection opened (Inspector, Admin) · transfer requested, approved or dispatched (Storekeeper) · order past its delivery date (Procurement, Admin)" badge="Available" tone="success"/>
+          <SettingsRow icon="settings" title="Email" detail={emailOn ? "Sent to users with an email address, through the SMTP server configured on the backend" : "Off: set SMTP_HOST and SMTP_FROM (and SMTP_USERNAME / SMTP_PASSWORD if needed) in backend/.env to send email"} badge={emailOn === null ? "Checking" : emailOn ? "On" : "Not configured"} tone={emailOn ? "success" : "neutral"}/>
         </div></>}
         {tab === "Integrations" && <><p>Connections this workspace uses.</p><div className="role-list">
           <SettingsRow icon="settings" title="Dockyard REST API" detail={API_BASE_URL} badge={apiStatusLabel(apiStatus)} tone={apiTone}/>
-          <SettingsRow icon="sparkles" title="AI model" detail="None connected — the Assistant and Analytics pages use fixed rules over live data" badge="Not connected"/>
+          <SettingsRow icon="sparkles" title="AI assistant (Claude)" detail={ai?.enabled ? `The Assistant answers with ${ai.model}, reading live data through read-only tools; questions and looked-up records are sent to Anthropic. Analytics stays rule-based.` : "Not connected: add ANTHROPIC_API_KEY to backend/.env to let the Assistant answer with Claude. Until then it uses fixed rules."} badge={ai === null ? "Checking" : ai.enabled ? "Connected" : "Not configured"} tone={ai?.enabled ? "success" : "neutral"}/>
+          <SettingsRow icon="scan" title="Phone scanning over HTTPS" detail="Run npm run dev:https in the frontend folder and open the https:// Network address on the phone (accept the certificate warning once)" badge="Available" tone="success"/>
           <SettingsRow icon="scan" title="QR labels and camera scanning" detail="Print batch labels from Inventory or QR Tracking; scan them with the device camera on QR Tracking (needs http://localhost or HTTPS)" badge="Available" tone="success"/>
         </div></>}
-        {tab === "Offline sync" && <><p>Offline use isn’t available.</p><div className="role-list">
-          <SettingsRow icon="wifiOff" title="Offline cache and sync" detail="The app needs a live connection to the API; nothing is cached locally or synced later" badge="Not available" tone="warning"/>
+        {tab === "Offline sync" && <><p>Read-only offline: pages you have opened are saved in this browser and shown when the server can’t be reached.</p><div className="role-list">
+          <SettingsRow icon="wifiOff" title="Offline reading" detail="The last loaded data of each page is kept in this browser (cleared when you sign out) and shown with an Offline banner and the time it was saved" badge="Available" tone="success"/>
+          <SettingsRow icon="lock" title="Offline changes" detail="Changes are refused while offline so stock is never changed from stale data; nothing is queued or synced later" badge="Disabled by design"/>
         </div></>}
       </Card>
     </div>
@@ -1247,7 +1413,7 @@ function CurrentPage({ page, onNavigate, materials, onMaterialsChanged, apiStatu
     case "Dashboard": return <Dashboard onNavigate={onNavigate} materials={materials}/>;
     case "Inventory": return <Inventory onMaterialsChanged={onMaterialsChanged} searchRequest={searchRequest} globalYard={globalYard}/>;
     case "Movements": return <Movements globalYard={globalYard} yardName={yardName} onAllYards={() => onYard("")}/>;
-    case "QR Tracking": return <QRTracking/>;
+    case "QR Tracking": return <QRTracking onMaterialsChanged={onMaterialsChanged}/>;
     case "Ships & Yards": return <ShipsYards onNavigate={onNavigate}/>;
     case "Procurement": return <Procurement onMaterialsChanged={onMaterialsChanged}/>;
     case "Analytics": return <Analytics onNavigate={onNavigate}/>;
@@ -1293,17 +1459,23 @@ export default function App() {
       .catch(() => { if (alive) setApiStatus((prev) => ({ state: "offline", version: prev.version, checkedAt: new Date().toISOString() })); });
     check();
     const id = window.setInterval(check, 60_000);
-    return () => { alive = false; window.clearInterval(id); };
+    // Any failed or recovered request updates the status at once, not only the minute check.
+    const onConnectivity = (e: Event) => {
+      if ((e as CustomEvent<Connectivity>).detail.offline) setApiStatus((prev) => ({ ...prev, state: "offline", checkedAt: new Date().toISOString() }));
+      else check();
+    };
+    window.addEventListener(OFFLINE_EVENT, onConnectivity);
+    return () => { alive = false; window.clearInterval(id); window.removeEventListener(OFFLINE_EVENT, onConnectivity); };
   }, []);
 
   // One summary feeds the Dashboard cards and the sidebar badge; refreshed on navigation and after Inventory changes.
   useEffect(() => {
     const controller = new AbortController();
-    getMaterialSummary(controller.signal)
+    getMaterialSummary(controller.signal, globalYard)
       .then((data) => setMaterials({ data, error: "" }))
       .catch((err) => { if (!controller.signal.aborted) setMaterials({ data: null, error: err instanceof Error ? err.message : String(err) }); });
     return () => controller.abort();
-  }, [page, materialsVersion]);
+  }, [page, materialsVersion, globalYard]);
 
-  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null} apiStatus={apiStatus}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage} onSearch={onSearch} apiStatus={apiStatus} yards={yards} yard={globalYard} onYard={onYard}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged} apiStatus={apiStatus} searchRequest={searchRequest} globalYard={globalYard} yardName={yardName} onYard={onYard}/></main></div></div>;
+  return <YardContext.Provider value={{ yard: globalYard, name: yardName, set: onYard }}><div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null} apiStatus={apiStatus}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage} onSearch={onSearch} apiStatus={apiStatus} yards={yards} yard={globalYard} onYard={onYard}/><main className="content"><OfflineBanner/><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged} apiStatus={apiStatus} searchRequest={searchRequest} globalYard={globalYard} yardName={yardName} onYard={onYard}/></main></div></div></YardContext.Provider>;
 }

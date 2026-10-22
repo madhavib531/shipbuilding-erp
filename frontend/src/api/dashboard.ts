@@ -16,12 +16,12 @@ export type ShipProgram = {
 
 type Envelope<T> = { status: string; message: string; data: T };
 
-export async function getMovements(months: number, signal?: AbortSignal) {
-  return (await apiRequest<Envelope<Movements>>(`/api/v1/dashboard/movements?months=${months}`, { signal })).data;
+export async function getMovements(months: number, signal?: AbortSignal, yard = "") {
+  return (await apiRequest<Envelope<Movements>>(`/api/v1/dashboard/movements?months=${months}${yard ? `&yard=${encodeURIComponent(yard)}` : ""}`, { signal })).data;
 }
 
-export async function getShipPrograms(signal?: AbortSignal) {
-  return (await apiRequest<Envelope<{ ships: ShipProgram[] }>>("/api/v1/dashboard/ships", { signal })).data.ships;
+export async function getShipPrograms(signal?: AbortSignal, yard = "") {
+  return (await apiRequest<Envelope<{ ships: ShipProgram[] }>>("/api/v1/dashboard/ships" + (yard ? `?yard=${encodeURIComponent(yard)}` : ""), { signal })).data.ships;
 }
 
 export type YardOverview = {

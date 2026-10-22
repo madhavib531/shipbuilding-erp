@@ -3,7 +3,9 @@ import { Button, Icon, Input, Select } from "./ui";
 import { listMaterials, type ApiMaterial, type ReferenceData } from "../api/materials";
 import { createTransfer, newIdempotencyKey } from "../api/transfers";
 
-export function TransferDialog({ refs, refsError, onClose, onDone }: {
+export function TransferDialog({ refs, refsError, onClose, onDone, initialSource }: {
+  /** A batch to move, e.g. one just scanned on QR Tracking. */
+  initialSource?: ApiMaterial;
   refs: ReferenceData | null;
   refsError: string;
   onClose: () => void;
@@ -14,7 +16,7 @@ export function TransferDialog({ refs, refsError, onClose, onDone }: {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<ApiMaterial[]>([]);
   const [searchError, setSearchError] = useState("");
-  const [source, setSource] = useState<ApiMaterial | null>(null);
+  const [source, setSource] = useState<ApiMaterial | null>(initialSource ?? null);
   const [quantity, setQuantity] = useState("");
   const [toYard, setToYard] = useState("");
   const [toLocation, setToLocation] = useState("");

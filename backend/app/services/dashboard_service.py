@@ -22,16 +22,18 @@ def _month_start(today: date, months_back: int) -> date:
     return date(index // 12, index % 12 + 1, 1)
 
 
-def movements(db: Session, months: int, today: date | None = None) -> dict:
+def movements(db: Session, months: int, today: date | None = None, yard: str = "") -> dict:
     """Ledger entries per calendar month, oldest first, counted rather than summed because batches use
-    different units. Months without entries are included with zeros."""
+    different units. Months without entries are included with zeros. `yard` counts only entries of batches
+    currently in that yard (a batch moved whole by a transfer counts at its new yard)."""
     today = today or date.today()
     start = _month_start(today, months - 1)
     year, month = extract("year", MaterialTransaction.created_at), extract("month", MaterialTransaction.created_at)
     rows = db.execute(
         select(year, month, MaterialTransaction.transaction_type, func.count())
         .where(MaterialTransaction.created_at >= start,
-               MaterialTransaction.transaction_type.in_(STOCK_IN + STOCK_OUT))
+               MaterialTransaction.transaction_type.in_(STOCK_IN + STOCK_OUT),
+               *([MaterialTransaction.material_id.in_(select(Material.id).where(Material.yard_id == yard))] if yard else []))
         .group_by(year, month, MaterialTransaction.transaction_type)
     ).all()
     counts: dict[tuple[int, int], dict[str, int]] = {}
@@ -49,7 +51,7 @@ def movements(db: Session, months: int, today: date | None = None) -> dict:
     }
 
 
-def ships(db: Session) -> list[dict]:
+def ships(db: Session, yard: str = "") -> list[dict]:
     """Every ship with its build status and the batches allocated to it."""
     allocated = (
         select(Material.ship_id, func.count(Material.id).label("batches"),
@@ -60,6 +62,7 @@ def ships(db: Session) -> list[dict]:
         select(Ship, Yard.name, func.coalesce(allocated.c.batches, 0), func.coalesce(allocated.c.reserved_batches, 0))
         .join(Yard, Yard.id == Ship.yard_id)
         .outerjoin(allocated, allocated.c.ship_id == Ship.id)
+        .where(*([Ship.yard_id == yard] if yard else []))
         .order_by(Ship.name)
     ).all()
     return [

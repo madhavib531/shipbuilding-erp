@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Icon, Input } from "./ui";
 import { ApiError } from "../api/client";
+import { useDenied } from "../auth";
 import type { ReferenceData } from "../api/materials";
 import { actOnPurchaseOrder, formatMoney, getPurchaseOrder, type OrderAction, type PurchaseOrder } from "../api/purchaseOrders";
 import { PurchaseOrderDialog } from "./PurchaseOrderDialog";
@@ -24,6 +25,7 @@ export function PurchaseOrderDetailDialog({ orderId, refs, refsError, onClose, o
   onClose: () => void;
   onChanged: (message: string) => void;
 }) {
+  const denied = useDenied();
   const [order, setOrder] = useState<PurchaseOrder | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reason, setReason] = useState("");
@@ -93,7 +95,7 @@ export function PurchaseOrderDetailDialog({ orderId, refs, refsError, onClose, o
           <dl style={{ marginTop: 0 }}>
             <div><dt>Order value</dt><dd>{formatMoney(order.total_value, order.currency)}</dd></div>
             <div><dt>Outstanding value</dt><dd>{formatMoney(order.outstanding_value, order.currency)}</dd></div>
-            <div><dt>Expected delivery</dt><dd>{order.expected_delivery_date ?? "Not set"}</dd></div>
+            <div><dt>Expected delivery</dt><dd>{order.expected_delivery_date ?? "Not set"}{order.delivery_yard ? ` · ${order.delivery_yard.name}` : ""}</dd></div>
             <div><dt>Received</dt><dd>{order.received_quantity} of {order.ordered_quantity} units ordered</dd></div>
             <div><dt>Created by</dt><dd>{order.created_by}</dd></div>
             <div><dt>Approved by</dt><dd>{order.approved_by ? `${order.approved_by} · ${when(order.approved_at!)}` : "Not approved"}</dd></div>
@@ -143,18 +145,18 @@ export function PurchaseOrderDetailDialog({ orderId, refs, refsError, onClose, o
 
       <div className="dialog-actions">
         {status === "Draft" && <>
-          <Button type="button" variant="danger" disabled={busy} onClick={() => act("cancel")}>Cancel order</Button>
-          <Button type="button" variant="secondary" disabled={busy} onClick={() => setSub("edit")}>Edit draft</Button>
-          <Button type="button" disabled={busy} onClick={() => act("approve")}>{busy ? "Saving…" : "Approve"}</Button>
+          <Button type="button" variant="danger" disabled={busy || !!denied("procurement")} title={denied("procurement")} onClick={() => act("cancel")}>Cancel order</Button>
+          <Button type="button" variant="secondary" disabled={busy || !!denied("procurement")} title={denied("procurement")} onClick={() => setSub("edit")}>Edit draft</Button>
+          <Button type="button" disabled={busy || !!denied("procurement")} title={denied("procurement")} onClick={() => act("approve")}>{busy ? "Saving…" : "Approve"}</Button>
         </>}
         {status === "Approved" && <>
-          <Button type="button" variant="danger" disabled={busy} onClick={() => act("cancel")}>Cancel order</Button>
-          <Button type="button" variant="ghost" disabled={busy} onClick={() => act("reopen")}>Reopen as draft</Button>
-          <Button type="button" disabled={busy} onClick={() => setSub("receive")}>Receive goods</Button>
+          <Button type="button" variant="danger" disabled={busy || !!denied("procurement")} title={denied("procurement")} onClick={() => act("cancel")}>Cancel order</Button>
+          <Button type="button" variant="ghost" disabled={busy || !!denied("procurement")} title={denied("procurement")} onClick={() => act("reopen")}>Reopen as draft</Button>
+          <Button type="button" disabled={busy || !!denied("receiving")} title={denied("receiving")} onClick={() => setSub("receive")}>Receive goods</Button>
         </>}
         {status === "Partially received" && <>
-          <Button type="button" variant="ghost" disabled={busy} onClick={() => act("close")}>Close short</Button>
-          <Button type="button" disabled={busy} onClick={() => setSub("receive")}>Receive goods</Button>
+          <Button type="button" variant="ghost" disabled={busy || !!denied("procurement")} title={denied("procurement")} onClick={() => act("close")}>Close short</Button>
+          <Button type="button" disabled={busy || !!denied("receiving")} title={denied("receiving")} onClick={() => setSub("receive")}>Receive goods</Button>
         </>}
         {(!status || ["Received", "Cancelled", "Closed"].includes(status)) && <Button type="button" variant="secondary" onClick={onClose}>Close</Button>}
       </div>

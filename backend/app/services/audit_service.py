@@ -41,10 +41,14 @@ def _s(column, length: int = 200):
     return cast(column, String(length))
 
 
-def _union():
+def _union(yard: str = ""):
     """Every event source as rows of one shape. NULLs are typed so each column has a single SQL type.
     created_at is left uncast: it is already TIMESTAMP in every table, and SQLite's CAST AS DATETIME
-    would turn it into a number."""
+    would turn it into a number.
+
+    `yard` keeps events of batches currently in that yard (stock ledger, inspections), transfers from or
+    to it, and purchase orders delivered to it."""
+    when = (lambda *conditions: conditions) if yard else (lambda *conditions: ())
     no_int, no_str = cast(null(), Integer), cast(null(), String(200))
     stock = (
         select(
@@ -65,6 +69,7 @@ def _union():
             _s(MaterialTransaction.reference_id, 50).label("detail"),
             MaterialTransaction.created_at.label("created_at"),
         ).join(Material, Material.id == MaterialTransaction.material_id)
+        .where(*when(Material.yard_id == yard))
     )
     transfer = (
         select(
@@ -86,6 +91,7 @@ def _union():
             MaterialTransferEvent.created_at,
         ).join(MaterialTransfer, MaterialTransfer.id == MaterialTransferEvent.transfer_id)
         .join(Material, Material.id == MaterialTransfer.material_id)
+        .where(*when((MaterialTransfer.from_yard_id == yard) | (MaterialTransfer.to_yard_id == yard)))
     )
     order = (
         select(
@@ -107,6 +113,7 @@ def _union():
             PurchaseOrderEvent.created_at,
         ).join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderEvent.purchase_order_id)
         .join(Supplier, Supplier.id == PurchaseOrder.supplier_id)
+        .where(*when(PurchaseOrder.delivery_yard_id == yard))
     )
     inspection = (
         select(
@@ -128,6 +135,7 @@ def _union():
             InspectionEvent.created_at,
         ).join(InspectionHold, InspectionHold.id == InspectionEvent.hold_id)
         .join(Material, Material.id == InspectionHold.material_id)
+        .where(*when(Material.yard_id == yard))
     )
     return union_all(stock, transfer, order, inspection).subquery("audit")
 
@@ -169,8 +177,8 @@ def _order_change_note(action: str, changes: dict | None) -> str | None:
 
 
 def list_events(db: Session, sources: list[AuditSource], search: str, actor: str,
-                date_from: date | None, date_to: date | None, skip: int, limit: int) -> tuple[int, list[dict]]:
-    audit = _union()
+                date_from: date | None, date_to: date | None, skip: int, limit: int, yard: str = "") -> tuple[int, list[dict]]:
+    audit = _union(yard)
     conditions = []
     if sources:
         conditions.append(audit.c.source.in_([s.value for s in sources]))

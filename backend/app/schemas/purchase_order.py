@@ -38,19 +38,21 @@ class PurchaseOrderLineIn(BaseModel):
 
 
 class PurchaseOrderCreate(BaseModel):
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     supplier_id: EntityId
     expected_delivery_date: Optional[date] = None
+    delivery_yard_id: Optional[EntityId] = None
     notes: Notes = None
     lines: list[PurchaseOrderLineIn] = Field(default_factory=list, max_length=200)
 
 
 class PurchaseOrderUpdate(BaseModel):
     """Draft edit. `lines`, when sent, replaces every line of the draft."""
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     expected_version: int = Field(..., ge=1)
     supplier_id: Optional[EntityId] = None
     expected_delivery_date: Optional[date] = None
+    delivery_yard_id: Optional[EntityId] = Field(None, description="Send null to clear")
     notes: Notes = None
     lines: Optional[list[PurchaseOrderLineIn]] = Field(None, max_length=200)
 
@@ -64,16 +66,22 @@ class PurchaseOrderUpdate(BaseModel):
 
 class PurchaseOrderAction(BaseModel):
     """Approve: the note is optional."""
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     expected_version: int = Field(..., ge=1)
     reason: Optional[Reason] = None
 
 
 class PurchaseOrderReasonAction(BaseModel):
     """Reopen, cancel and close: a reason is required."""
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     expected_version: int = Field(..., ge=1)
     reason: Reason
+
+
+class _YardRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    name: str
 
 
 class _SupplierRef(BaseModel):
@@ -127,6 +135,7 @@ class PurchaseOrderRead(BaseModel):
     supplier: _SupplierRef
     status: PurchaseOrderStatus
     expected_delivery_date: Optional[date]
+    delivery_yard: Optional[_YardRef] = None
     notes: Optional[str]
     created_by: str
     approved_by: Optional[str]

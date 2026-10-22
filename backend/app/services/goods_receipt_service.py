@@ -23,6 +23,7 @@ from app.models.material import Material, MaterialStatusEnum
 from app.models.purchase_order import OPEN_PURCHASE_ORDER_STATUSES, PurchaseOrder
 from app.models.transaction import MaterialTransaction, TransactionType
 from app.schemas.goods_receipt import GoodsReceiptCreate
+from app.services import material_service
 from app.services import inspection_service as inspections
 from app.services import purchase_order_service as orders
 from app.services.transfer_service import _lock_materials
@@ -33,6 +34,7 @@ RECEIPT_OPTIONS = (
     selectinload(GoodsReceipt.lines).selectinload(GoodsReceiptLine.purchase_order_line),
     selectinload(GoodsReceipt.lines).selectinload(GoodsReceiptLine.inspection_hold),
 )
+
 
 
 def _label(receipt_id: int) -> str:
@@ -138,6 +140,7 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
                 batch=line.batch, unit=order_line.unit,
                 status=MaterialStatusEnum.INSPECTION if line.hold_for_inspection else MaterialStatusEnum.HEALTHY,
                 quantity=0, available=0, reserved=0, yard_id=data.yard_id, location_id=data.location_id, version=1,
+                unit_cost=order_line.unit_price, cost_currency=order_line.currency,
             )
             db.add(batch)
             batches[batch.id] = batch
@@ -157,6 +160,7 @@ def post_receipt(db: Session, order_id: int, data: GoodsReceiptCreate, idempoten
                 problems.append("it is under inspection")
             if problems:
                 raise InvalidInputError(f"Batch {batch.id} cannot receive line {order_line.line_no}: " + "; ".join(problems))
+        material_service.apply_incoming_cost(batch, line.accepted_quantity, order_line.unit_price, order_line.currency)
         batch.quantity += line.accepted_quantity
         if not line.hold_for_inspection:  # held goods stay blocked until an inspection releases them
             batch.available += line.accepted_quantity

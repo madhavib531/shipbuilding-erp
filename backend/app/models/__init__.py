@@ -10,6 +10,9 @@ from app.models.transfer import MaterialTransfer, MaterialTransferEvent, Transfe
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderEvent, PurchaseOrderLine, PurchaseOrderStatus
 from app.models.goods_receipt import GoodsReceipt, GoodsReceiptLine
 from app.models.inspection import InspectionEvent, InspectionHold, InspectionStatus, RejectionDisposition
+from app.models.user import User, UserRole, UserSession
+from app.models.notification import Notification
+from app.models.exchange_rate import ExchangeRate
 
 __all__ = [
     "Base",
@@ -35,4 +38,9 @@ __all__ = [
     "InspectionEvent",
     "InspectionStatus",
     "RejectionDisposition",
+    "User",
+    "UserRole",
+    "UserSession",
+    "Notification",
+    "ExchangeRate",
 ]

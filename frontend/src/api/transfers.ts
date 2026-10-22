@@ -1,5 +1,4 @@
 import { apiRequest } from "./client";
-import { CURRENT_USER } from "../currentUser";
 
 export type TransferStatus = "Requested" | "Approved" | "Rejected" | "Dispatched" | "Received" | "Cancelled";
 
@@ -78,7 +77,7 @@ type Envelope<T> = { status: string; message: string; data: T };
 
 const path = (id: number, action?: string) => `/api/v1/transfers/${id}${action ? `/${action}` : ""}`;
 const post = async (url: string, body: object, headers?: Record<string, string>) =>
-  (await apiRequest<Envelope<Transfer>>(url, { method: "POST", body: JSON.stringify({ actor: CURRENT_USER.name, ...body }), headers })).data;
+  (await apiRequest<Envelope<Transfer>>(url, { method: "POST", body: JSON.stringify(body), headers })).data;
 
 /** `yard` matches transfers from or to that yard. */
 export async function listTransfers(statuses: TransferStatus[], page: { skip: number; limit: number; yard?: string }, signal?: AbortSignal) {
@@ -88,8 +87,8 @@ export async function listTransfers(statuses: TransferStatus[], page: { skip: nu
   return (await apiRequest<Envelope<{ transfers: Transfer[]; total: number }>>(`/api/v1/transfers?${params}`, { signal })).data;
 }
 
-export async function getTransferSummary(signal?: AbortSignal) {
-  return (await apiRequest<Envelope<TransferSummary>>("/api/v1/transfers/summary", { signal })).data;
+export async function getTransferSummary(signal?: AbortSignal, yard = "") {
+  return (await apiRequest<Envelope<TransferSummary>>("/api/v1/transfers/summary" + (yard ? `?yard=${encodeURIComponent(yard)}` : ""), { signal })).data;
 }
 
 export async function getTransfer(id: number, signal?: AbortSignal) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Icon, Input } from "./ui";
 import { ApiError } from "../api/client";
+import { useDenied } from "../auth";
 import {
   TRANSFER_STATUS_LABEL,
   approveTransfer,
@@ -24,6 +25,7 @@ export function TransferActionDialog({ transferId, tone, onClose, onDone }: {
   onClose: () => void;
   onDone: (message: string) => void;
 }) {
+  const denied = useDenied();
   const [transfer, setTransfer] = useState<Transfer | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reason, setReason] = useState("");
@@ -134,15 +136,15 @@ export function TransferActionDialog({ transferId, tone, onClose, onDone }: {
 
       <div className="dialog-actions">
         {status === "Requested" && <>
-          <Button type="button" variant="danger" disabled={busy} onClick={() => needReason((r) => rejectTransfer(transferId, r), "rejected")}>Reject</Button>
-          <Button type="button" variant="ghost" disabled={busy} onClick={() => needReason((r) => cancelTransfer(transferId, r), "cancelled")}>Cancel transfer</Button>
-          <Button type="button" disabled={busy} onClick={() => run(() => approveTransfer(transferId, reason.trim() || null), "approved")}>{busy ? "Saving…" : "Approve"}</Button>
+          <Button type="button" variant="danger" disabled={busy || !!denied("transfers")} title={denied("transfers")} onClick={() => needReason((r) => rejectTransfer(transferId, r), "rejected")}>Reject</Button>
+          <Button type="button" variant="ghost" disabled={busy || !!denied("transfers")} title={denied("transfers")} onClick={() => needReason((r) => cancelTransfer(transferId, r), "cancelled")}>Cancel transfer</Button>
+          <Button type="button" disabled={busy || !!denied("transfers")} title={denied("transfers")} onClick={() => run(() => approveTransfer(transferId, reason.trim() || null), "approved")}>{busy ? "Saving…" : "Approve"}</Button>
         </>}
         {status === "Approved" && <>
-          <Button type="button" variant="ghost" disabled={busy} onClick={() => needReason((r) => cancelTransfer(transferId, r), "cancelled")}>Cancel transfer</Button>
-          <Button type="button" disabled={busy} onClick={() => run(() => dispatchTransfer(transferId, reason.trim() || null), "dispatched")}>{busy ? "Dispatching…" : "Dispatch"}</Button>
+          <Button type="button" variant="ghost" disabled={busy || !!denied("transfers")} title={denied("transfers")} onClick={() => needReason((r) => cancelTransfer(transferId, r), "cancelled")}>Cancel transfer</Button>
+          <Button type="button" disabled={busy || !!denied("transfers")} title={denied("transfers")} onClick={() => run(() => dispatchTransfer(transferId, reason.trim() || null), "dispatched")}>{busy ? "Dispatching…" : "Dispatch"}</Button>
         </>}
-        {status === "Dispatched" && <Button type="button" disabled={busy} onClick={receive}>{busy ? "Receiving…" : "Confirm receipt"}</Button>}
+        {status === "Dispatched" && <Button type="button" disabled={busy || !!denied("transfers")} title={denied("transfers")} onClick={receive}>{busy ? "Receiving…" : "Confirm receipt"}</Button>}
         {(!status || ["Received", "Rejected", "Cancelled"].includes(status)) && <Button type="button" variant="secondary" onClick={onClose}>Close</Button>}
       </div>
     </div>

@@ -1,5 +1,4 @@
 import { apiRequest } from "./client";
-import { CURRENT_USER } from "../currentUser";
 
 export type InspectionStatus = "Open" | "Released" | "Rejected" | "Partially released";
 export const INSPECTION_STATUSES: InspectionStatus[] = ["Open", "Released", "Partially released", "Rejected"];
@@ -56,17 +55,18 @@ type Envelope<T> = { status: string; message: string; data: T };
 
 const path = (id: number, action?: string) => `/api/v1/inspections/${id}${action ? `/${action}` : ""}`;
 const post = async (url: string, body: object) =>
-  (await apiRequest<Envelope<Inspection>>(url, { method: "POST", body: JSON.stringify({ actor: CURRENT_USER.name, ...body }) })).data;
+  (await apiRequest<Envelope<Inspection>>(url, { method: "POST", body: JSON.stringify(body) })).data;
 
-export async function listInspections(query: { status?: InspectionStatus; search?: string; skip: number; limit: number }, signal?: AbortSignal) {
+export async function listInspections(query: { status?: InspectionStatus; search?: string; yard?: string; skip: number; limit: number }, signal?: AbortSignal) {
   const params = new URLSearchParams({ skip: String(query.skip), limit: String(query.limit) });
+  if (query.yard) params.set("yard", query.yard);
   if (query.status) params.set("status", query.status);
   if (query.search) params.set("search", query.search);
   return (await apiRequest<Envelope<{ inspections: Inspection[]; total: number }>>(`/api/v1/inspections?${params}`, { signal })).data;
 }
 
-export async function getInspectionSummary(signal?: AbortSignal) {
-  return (await apiRequest<Envelope<InspectionSummary>>("/api/v1/inspections/summary", { signal })).data;
+export async function getInspectionSummary(signal?: AbortSignal, yard = "") {
+  return (await apiRequest<Envelope<InspectionSummary>>("/api/v1/inspections/summary" + (yard ? `?yard=${encodeURIComponent(yard)}` : ""), { signal })).data;
 }
 
 export async function getInspection(id: number, signal?: AbortSignal) {

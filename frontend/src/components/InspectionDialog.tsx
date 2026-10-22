@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Icon, Input, Select } from "./ui";
 import { ApiError } from "../api/client";
+import { useDenied } from "../auth";
 import {
   REJECTION_DISPOSITIONS,
   getInspection,
@@ -21,6 +22,7 @@ export function InspectionDialog({ inspectionId, onClose, onDone }: {
   onClose: () => void;
   onDone: (message: string) => void;
 }) {
+  const denied = useDenied();
   const [hold, setHold] = useState<Inspection | null>(null);
   const [loadError, setLoadError] = useState("");
   const [decision, setDecision] = useState<"release" | "reject">("release");
@@ -128,7 +130,7 @@ export function InspectionDialog({ inspectionId, onClose, onDone }: {
 
       <div className="dialog-actions">
         {open
-          ? <Button type="button" variant={decision === "reject" ? "danger" : "primary"} disabled={busy} onClick={submit}>{busy ? "Saving…" : decision === "reject" ? "Reject goods" : "Release to stock"}</Button>
+          ? <Button type="button" variant={decision === "reject" ? "danger" : "primary"} disabled={busy || !!denied("inspect")} title={denied("inspect")} onClick={submit}>{busy ? "Saving…" : decision === "reject" ? "Reject goods" : "Release to stock"}</Button>
           : <Button type="button" variant="secondary" onClick={onClose}>Close</Button>}
       </div>
     </div>

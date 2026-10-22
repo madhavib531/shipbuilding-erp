@@ -1,5 +1,32 @@
 # Changelog — Dockyard Materials Command Backend
 
+## [Unreleased] — Sign-in, roles, valuation, yards, notifications, offline, AI assistant
+
+### Added
+- Accounts and sessions (`users`, `user_sessions`; migration `a7c1e5d2f4b8`): scrypt password hashes,
+  12-hour bearer sessions stored as SHA-256 digests, sign-in throttling, `scripts/create_user.py`.
+  Every endpoint except health and login needs a session; writes check the role (Admin, Storekeeper,
+  Procurement, Inspector, Viewer) and record the signed-in user as the actor.
+- Stock valuation: `materials.unit_cost` / `cost_currency` (migration `d2f6b8a1c3e5`), set from purchase
+  prices on receipt (weighted average in the same currency) and carried by transfers; stock value per
+  currency and unvalued batches in `GET /materials/summary`.
+- `purchase_orders.delivery_yard_id`; a `yard` filter on the summaries, lists, dashboard and audit feed.
+- Stored notifications per user with read state, for Low stock, inspections opened, transfer steps and
+  overdue orders; optional email through smtplib.
+- `POST /api/v1/assistant/ask`: Claude (`anthropic==1.12.0`) with read-only tools over live data, enabled
+  by `ANTHROPIC_API_KEY`.
+- Frontend: sign-in screen, account menu, user administration, role-aware buttons, actions after a QR
+  scan, `npm run dev:https` (self-signed HTTPS with an API proxy), unit cost on batches, yard filtering on
+  every page, notification inbox, read-only offline mode with a service worker for production builds,
+  Claude mode on the Assistant page, CSV export for purchase orders, suppliers and inspections.
+
+- Indian rupee as the base currency: `exchange_rates` (migration `e8b3c1f4a9d2`) with admin-managed rates;
+  stock value and open order value converted to INR (`stock_value_base`, `open_value_base`); INR defaults,
+  Indian digit grouping, a rate editor in Settings and a "Value in INR" column in the inventory export.
+
+### Changed
+- Request bodies no longer need `actor`; the server ignores it and uses the signed-in user.
+
 ## [Unreleased] — Project completion: live pages, rule-based analytics, hardening
 
 ### Added

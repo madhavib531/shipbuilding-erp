@@ -3,7 +3,9 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session, undefer
 from sqlalchemy.exc import IntegrityError
+from app.auth import require, stamp
 from app.database import get_db
+from app.models.user import User
 from app.models.material import Material, MaterialCategory, MaterialStatusEnum
 from app.models.facility import Yard, StorageLocation
 from app.models.program import Ship
@@ -12,15 +14,17 @@ from app.models.transfer import MaterialTransfer
 from app.schemas.common import SuccessResponse
 from app.schemas.material import MaterialCreate, MaterialUpdate, MaterialRead, MaterialTransactionRead
 from app.services import inspection_service, material_service
+from app.services import notification_service as notifications
 
 router = APIRouter(prefix="/api/v1/materials", tags=["materials"])
 
 
 # Registered before "/{material_id}" so "summary" is not treated as a material ID.
 @router.get("/summary", response_model=SuccessResponse)
-def material_summary(db: Session = Depends(get_db)):
-    """Batch counts for the dashboard: available, reserved, Low stock (manual status) and active yards."""
-    return SuccessResponse(message="Material summary retrieved successfully", data=material_service.summary(db))
+def material_summary(yard: str = Query("", description="Limit to one yard"), db: Session = Depends(get_db)):
+    """Batch counts and stock value for the dashboard: available, reserved, Low stock (manual status), value
+    per currency, batches without a cost, and active yards."""
+    return SuccessResponse(message="Material summary retrieved successfully", data=material_service.summary(db, yard))
 
 
 @router.get("", response_model=SuccessResponse)
@@ -133,9 +137,18 @@ def list_material_transactions(
     )
 
 
+def _notify_low_stock(db: Session, material: Material, user: User) -> None:
+    notifications.safely(lambda: notifications.notify(
+        db, "low_stock", f"{material.name} ({material.id}) flagged Low stock",
+        body=f"{material.available} {material.unit} available at {material.yard.name}. Flagged by {user.display_name}.",
+        page="Inventory", record=material.id, dedupe_key=f"low-stock:{material.id}:{material.version}",
+        exclude_user_id=user.id))
+
+
 @router.post("", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
 def create_material(
     material_data: MaterialCreate,
+    user: User = Depends(require("inventory")),
     db: Session = Depends(get_db),
 ):
     """
@@ -149,6 +162,7 @@ def create_material(
     - Ship (if provided) belongs to the specified yard
     - Quantities are consistent
     """
+    material_data = stamp(material_data, user)
     # Check if material already exists
     existing = db.query(Material).filter(Material.id == material_data.id).first()
     if existing:
@@ -229,6 +243,8 @@ def create_material(
         )
 
     created = MaterialRead.model_validate(material)
+    if material.status == MaterialStatusEnum.LOW_STOCK:
+        _notify_low_stock(db, material, user)
 
     return SuccessResponse(
         message="Material created successfully",
@@ -240,6 +256,7 @@ def create_material(
 def update_material(
     material_id: str,
     material_update: MaterialUpdate,
+    user: User = Depends(require("inventory")),
     db: Session = Depends(get_db),
 ):
     """
@@ -254,6 +271,7 @@ def update_material(
     - Quantity consistency
     - expected_version, if sent, still matches (stale-edit protection)
     """
+    material_update = stamp(material_update, user)
     # Lock the row so the checks below and the write cannot interleave with a transfer dispatch or receipt.
     material = (
         db.query(Material).filter(Material.id == material_id)
@@ -328,6 +346,16 @@ def update_material(
                 detail=f"Ship '{ship_id}' does not belong to yard '{yard_id}'"
             )
 
+    # A cost needs its currency (and the other way round), judged on the merged values.
+    if ("unit_cost" in update_data) or ("cost_currency" in update_data):
+        cost = update_data.get("unit_cost", material.unit_cost)
+        currency = update_data.get("cost_currency", material.cost_currency)
+        if (cost is None) != (currency is None):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="unit_cost and cost_currency must be set together, or both cleared"
+            )
+
     # Validate quantity consistency
     quantity = update_data.get("quantity", material.quantity)
     available = update_data.get("available", material.available)
@@ -358,6 +386,7 @@ def update_material(
 
     # Every change to a stock figure is recorded in the ledger, so it needs an actor and a reason.
     before = material_service.stock_figures(material)
+    status_before = material.status
     stock_changed = any(update_data.get(f, before[f]) != before[f] for f in material_service.STOCK_FIELDS)
     if stock_changed and not actor:
         raise HTTPException(
@@ -389,6 +418,8 @@ def update_material(
         )
 
     material_data = MaterialRead.model_validate(material)
+    if material.status == MaterialStatusEnum.LOW_STOCK and status_before != MaterialStatusEnum.LOW_STOCK:
+        _notify_low_stock(db, material, user)
 
     return SuccessResponse(
         message="Material updated successfully",
@@ -399,6 +430,7 @@ def update_material(
 @router.delete("/{material_id}", response_model=SuccessResponse)
 def delete_material(
     material_id: str,
+    user: User = Depends(require("inventory")),
     db: Session = Depends(get_db),
 ):
     """

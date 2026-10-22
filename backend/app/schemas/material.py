@@ -3,6 +3,7 @@
 from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, model_validator
 from typing import Annotated, Optional, List
 from datetime import datetime
+from decimal import Decimal
 from app.models.material import MaterialStatusEnum
 from app.models.transaction import TransactionType
 
@@ -14,6 +15,13 @@ def _blank_to_none(value):
 # Blank strings become None so a whitespace-only reason or actor counts as missing.
 StockActor = Annotated[Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]],
                        BeforeValidator(_blank_to_none)]
+UnitCost = Annotated[Optional[Decimal], Field(None, ge=0, max_digits=14, decimal_places=4)]
+def _currency_code(value):
+    value = _blank_to_none(value)
+    return value.strip().upper() if isinstance(value, str) else value
+
+
+CostCurrency = Annotated[Optional[Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]], BeforeValidator(_currency_code)]
 StockReason = Annotated[Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]],
                         BeforeValidator(_blank_to_none)]
 
@@ -52,6 +60,8 @@ class MaterialBase(BaseModel):
     location_id: Optional[str] = Field(None, max_length=50)
     ship_id: Optional[str] = Field(None, max_length=50)
     status: MaterialStatusEnum = MaterialStatusEnum.HEALTHY
+    unit_cost: UnitCost = None
+    cost_currency: CostCurrency = None
 
     @model_validator(mode="after")
     def validate_quantities(self):
@@ -61,6 +71,8 @@ class MaterialBase(BaseModel):
                 f"available ({self.available}) + reserved ({self.reserved}) "
                 f"cannot exceed quantity ({self.quantity})"
             )
+        if (self.unit_cost is None) != (self.cost_currency is None):
+            raise ValueError("unit_cost and cost_currency must be given together")
         return self
 
 
@@ -85,6 +97,8 @@ class MaterialUpdate(BaseModel):
     location_id: Optional[str] = Field(None, max_length=50)
     ship_id: Optional[str] = Field(None, max_length=50)
     status: Optional[MaterialStatusEnum] = None
+    unit_cost: UnitCost = None
+    cost_currency: CostCurrency = None
     expected_version: Optional[int] = Field(
         None, ge=1, description="The version the client last read; the update is refused with 409 if it changed"
     )
@@ -94,7 +108,7 @@ class MaterialUpdate(BaseModel):
     # Cross-field quantity rules need the stored values, so the endpoint checks them after merging.
     @model_validator(mode="after")
     def reject_null_for_required_fields(self):
-        nullable = {"location_id", "ship_id", "expected_version", "actor", "stock_reason"}
+        nullable = {"location_id", "ship_id", "expected_version", "actor", "stock_reason", "unit_cost", "cost_currency"}
         nulled = sorted(f for f in self.model_fields_set - nullable if getattr(self, f) is None)
         if nulled:
             raise ValueError(f"These fields cannot be null: {', '.join(nulled)}")

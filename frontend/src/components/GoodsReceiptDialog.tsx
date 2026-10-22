@@ -18,7 +18,7 @@ export function GoodsReceiptDialog({ order, refs, refsError, onClose, onDone }: 
   // One key per dialog: a retry after a lost response replays this receipt instead of adding stock twice.
   const [idempotencyKey] = useState(newIdempotencyKey);
   const open = useMemo(() => order.lines.filter((l) => l.outstanding_quantity > 0), [order]);
-  const [yardId, setYardId] = useState("");
+  const [yardId, setYardId] = useState(order.delivery_yard?.id ?? "");  // the order's delivery yard, if set
   const [locationId, setLocationId] = useState("");
   const [deliveryNote, setDeliveryNote] = useState("");
   const [notes, setNotes] = useState("");

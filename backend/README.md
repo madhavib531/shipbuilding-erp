@@ -15,8 +15,26 @@ python -m venv venv
 pip install -r requirements.txt
 Copy-Item .env.example .env          # then set DATABASE_URL in .env
 alembic upgrade head                 # create or upgrade tables
+python scripts\create_user.py --username admin --name "Your Name" --role Admin   # first admin (asks for a password)
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+Every endpoint except `/health` and `/api/v1/auth/login` needs a session: sign in with
+`POST /api/v1/auth/login` and send `Authorization: Bearer <token>` (sessions last 12 hours). Passwords are
+stored as scrypt hashes; tokens only as SHA-256 digests; five failed sign-ins for a username lock it for
+15 minutes. Changes are recorded under the signed-in user, whatever `actor` a request body says.
+
+| Role | Can change |
+|---|---|
+| Admin | everything, including users |
+| Storekeeper | inventory, transfers, goods receipts, inspection holds |
+| Procurement | suppliers and purchase orders |
+| Inspector | inspection holds and decisions |
+| Viewer | nothing (read-only) |
+
+Optional settings in `.env`: `SMTP_HOST`, `SMTP_PORT` (587), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`,
+`SMTP_STARTTLS` (true) to email notifications; `ANTHROPIC_API_KEY` (and `ASSISTANT_MODEL`, default
+`claude-sonnet-5-5`) to let the Assistant answer with Claude.
 
 `DATABASE_URL` is **required** — the backend refuses to start without it rather than silently using a
 local SQLite file. Use `postgresql+psycopg://USER:PASSWORD@localhost:5432/dockyard_inventory`
@@ -24,6 +42,9 @@ local SQLite file. Use `postgresql+psycopg://USER:PASSWORD@localhost:5432/dockya
 
 Optional development data (categories, yards, locations, ships and four suppliers; never materials):
 `python -m scripts.seed_reference_data`. It only inserts missing rows.
+
+Phones: `npm run dev:https` serves the app over self-signed HTTPS and proxies `/api` to the backend, so the
+camera works and no CORS change is needed (set `API_PROXY_TARGET` if the API is not on localhost:8000).
 
 Frontend: `cd ..\frontend; npm install; npm run dev` → open **http://localhost:8443** (expects the API
 at http://localhost:8000; override with `VITE_API_BASE_URL`). The API only accepts browser requests
@@ -37,7 +58,9 @@ Interactive API docs: http://localhost:8000/api/docs · health check: http://loc
 
 Alembic, one linear history: `45e53a0f1df0` initial → `cab3875a1603` transfers → `8b06997ed8a5`
 purchase orders → `6e07101bb214` goods receipts → `f3263eb479ec` inspection holds → `9d4c2a7e1b30`
-manual inspection holds (head; makes `inspection_holds.goods_receipt_line_id` nullable).
+manual inspection holds → `a7c1e5d2f4b8` users and sessions → `d2f6b8a1c3e5` stock valuation, delivery
+yard and notifications → `e8b3c1f4a9d2` exchange rates (head). The last three add tables and nullable
+columns only; no data is changed.
 `alembic current` shows the applied revision. After changing a model:
 `alembic revision --autogenerate -m "..."`, review the file, then `alembic upgrade head`. Back up the
 database before applying migrations to it.
@@ -90,9 +113,21 @@ never prints the password, and confirms the development database's row counts ar
 | Audit feed | `GET /audit-events` — stock ledger, transfer, purchase-order and inspection events; filters `source` (repeatable), `search`, `actor`, `date_from`, `date_to`, `skip`, `limit` ≤ 200 |
 | Dashboard | `GET /dashboard/movements?months=1..24`, `GET /dashboard/ships`, `GET /dashboard/yards` |
 | Analytics | `GET /analytics/overview` — categories, batch age, supplier, transfer and inspection figures and rule-based attention flags, computed from stored records (no AI model) |
+| Sign-in | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/password` |
+| Users (Admin) | `GET/POST /users`, `PATCH /users/{id}` (name, email, role, active), `POST /users/{id}/password` |
+| Notifications | `GET /notifications` (own, with unread count), `POST /notifications/{id}/read`, `POST /notifications/read-all` |
+| Assistant | `GET /assistant/status`, `POST /assistant/ask` (Claude with read-only tools; 503 without `ANTHROPIC_API_KEY`) |
+| Exchange rates | `GET /exchange-rates` (base currency and rates), `PUT /exchange-rates/{currency}` `{"rate"}` and `DELETE /exchange-rates/{currency}` (Admin) |
+
+`yard` filters `GET /materials/summary`, `/transfers/summary`, `/inspections`, `/inspections/summary`,
+`/purchase-orders` and `/purchase-orders/summary` (delivery yard), `/dashboard/movements`, `/dashboard/ships`
+and `/audit-events`. Batches carry `unit_cost` and `cost_currency`; `GET /materials/summary` adds
+`stock_value` per currency, `stock_value_base` (converted into INR) and `unvalued_batches`;
+`GET /purchase-orders/summary` adds `open_value_base`. The base currency is `BASE_CURRENCY` (default INR).
 
 Responses use `{"status": "success", "message": ..., "data": ...}`; errors use `{"detail": ...}` with
-404 (not found), 409 (conflict, stale version, idempotency-key reuse) or 422 (validation).
+401 (not signed in), 403 (role), 404 (not found), 409 (conflict, stale version, idempotency-key reuse),
+422 (validation) or 429 (too many failed sign-ins).
 
 ## Project structure
 
@@ -113,12 +148,16 @@ tests/               pytest suite (*_pg.py files need PostgreSQL)
 
 ## Known limitations
 
-* No sign-in or roles: the `actor` on each change is supplied by the client and not verified.
 * Supplier changes, edits to non-stock fields, and inventory edits made before stock adjustments were
   recorded do not appear in the audit feed. The application only appends to its history tables, but
   the database does not enforce immutability.
-* No stock valuation (costs), offline mode or stored notifications (the frontend's bell reads live alerts
-  from the summary endpoints). Inventory and the audit log export CSV; the
-  dashboard report is printed or saved as PDF from the browser. QR labels are printed from the
-  browser (no label-printer integration); camera scanning needs http://localhost or HTTPS. The Assistant and Analytics pages are rule-based; no AI model is connected.
+* Exchange rates are entered by an admin and used as they stand (no history, no online feed); conversion is
+  for totals only. A receipt into a batch that already holds uncosted stock, or is costed in another
+  currency, leaves its cost unchanged.
+* Offline mode is read-only; nothing is queued or synced. Yard filters on the stock ledger and inspections
+  use the batch's current yard. Login throttling is per backend process.
+* Email is sent synchronously after a change when SMTP is configured; failures are logged, never retried.
+* QR labels are printed from the browser (no label-printer integration).
+* `requirements.txt` pins older versions than the ones installed in the development venv (FastAPI, Starlette,
+  Pydantic, SQLAlchemy, httpx); the code is tested against the installed versions.
 * Timestamps are stored without a time zone in the database server's local time.

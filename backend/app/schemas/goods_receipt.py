@@ -46,7 +46,7 @@ class GoodsReceiptLineIn(BaseModel):
 
 
 class GoodsReceiptCreate(BaseModel):
-    actor: Actor
+    actor: Optional[Actor] = Field(None, description="Set by the server from the signed-in user")
     expected_version: int = Field(..., ge=1, description="The purchase order's current version")
     yard_id: EntityId
     location_id: Optional[EntityId] = None
