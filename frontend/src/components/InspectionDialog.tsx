@@ -26,13 +26,19 @@ export function InspectionDialog({ inspectionId, onClose, onDone }: {
   const [decision, setDecision] = useState<"release" | "reject">("release");
   const [quantity, setQuantity] = useState("");
   const [reason, setReason] = useState("");
-  const [disposition, setDisposition] = useState<RejectionDisposition>("Return to supplier");
+  const [disposition, setDisposition] = useState<RejectionDisposition>("Scrap");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback((signal?: AbortSignal) =>
     getInspection(inspectionId, signal)
-      .then((h) => { setHold(h); setQuantity(String(h.outstanding_quantity)); setLoadError(""); })
+      .then((h) => {
+        setHold(h);
+        setQuantity(String(h.outstanding_quantity));
+        // Stock held by hand has no supplier delivery to return to.
+        setDisposition(h.goods_receipt_line ? "Return to supplier" : "Scrap");
+        setLoadError("");
+      })
       .catch((err) => { if (!signal?.aborted) setLoadError(err.message); }), [inspectionId]);
 
   useEffect(() => {
@@ -80,17 +86,19 @@ export function InspectionDialog({ inspectionId, onClose, onDone }: {
 
       {loadError && <div className="notice" role="alert" style={{ marginTop: 18 }}><Icon name="warning"/>{loadError}</div>}
 
-      {hold && source && <div style={{ padding: "0 22px" }}>
+      {hold && <div style={{ padding: "0 22px" }}>
         <div className="material-detail" style={{ marginTop: 18 }}>
           <dl style={{ marginTop: 0 }}>
             <div><dt>Batch</dt><dd>{hold.material.id} · Lot {hold.material.batch}</dd></div>
             <div><dt>Location</dt><dd>{hold.material.yard.name}{hold.material.location ? ` · Zone ${hold.material.location.zone}` : ""}</dd></div>
-            <div><dt>Held on receipt</dt><dd>{hold.quantity} {hold.material.unit}</dd></div>
+            <div><dt>{source ? "Held on receipt" : "Held from stock"}</dt><dd>{hold.quantity} {hold.material.unit}</dd></div>
             <div><dt>Awaiting decision</dt><dd>{hold.outstanding_quantity} {hold.material.unit}</dd></div>
             <div><dt>Released</dt><dd>{hold.released_quantity} {hold.material.unit}</dd></div>
             <div><dt>Rejected</dt><dd>{hold.rejected_quantity} {hold.material.unit}</dd></div>
-            <div><dt>Purchase order</dt><dd>{source.receipt.purchase_order.display_id} · line {source.purchase_order_line.line_no} · {source.receipt.purchase_order.supplier.name}</dd></div>
-            <div><dt>Goods receipt</dt><dd>{source.receipt.display_id}{source.receipt.delivery_note ? ` · ${source.receipt.delivery_note}` : ""}</dd></div>
+            {source ? <>
+              <div><dt>Purchase order</dt><dd>{source.receipt.purchase_order.display_id} · line {source.purchase_order_line.line_no} · {source.receipt.purchase_order.supplier.name}</dd></div>
+              <div><dt>Goods receipt</dt><dd>{source.receipt.display_id}{source.receipt.delivery_note ? ` · ${source.receipt.delivery_note}` : ""}</dd></div>
+            </> : <div><dt>Source</dt><dd>Existing stock, held by {hold.created_by}</dd></div>}
           </dl>
         </div>
       </div>}
@@ -98,12 +106,14 @@ export function InspectionDialog({ inspectionId, onClose, onDone }: {
       {open && <div className="form-grid">
         <label><span>Decision</span><Select name="decision" value={decision} onChange={(e) => setDecision(e.target.value as "release" | "reject")} disabled={busy}><option value="release">Release to stock</option><option value="reject">Reject</option></Select></label>
         <label><span>Quantity ({hold!.material.unit})</span><Input name="quantity" type="number" min={1} max={hold!.outstanding_quantity} step={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} disabled={busy}/></label>
-        {decision === "reject" && <label style={full}><span>Disposition</span><Select name="disposition" value={disposition} onChange={(e) => setDisposition(e.target.value as RejectionDisposition)} disabled={busy}>{REJECTION_DISPOSITIONS.map((d) => <option key={d}>{d}</option>)}</Select></label>}
+        {decision === "reject" && <label style={full}><span>Disposition</span><Select name="disposition" value={disposition} onChange={(e) => setDisposition(e.target.value as RejectionDisposition)} disabled={busy}>{(source ? REJECTION_DISPOSITIONS : ["Scrap"]).map((d) => <option key={d}>{d}</option>)}</Select></label>}
         <label style={full}><span>{decision === "reject" ? "Reason (required)" : "Inspection note (optional)"}</span>
           <Input name="reason" placeholder={decision === "reject" ? "What failed inspection?" : "Tests performed, certificate reference…"} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} disabled={busy}/></label>
         <p className="muted-copy" style={full}>{decision === "release"
           ? "Released goods become available for transfers and allocation."
-          : `Rejected goods leave stock and are recorded as ${disposition === "Scrap" ? "scrap" : "returned to the supplier"}. The quantity stays owed on ${source!.receipt.purchase_order.display_id} for redelivery, unless the order is closed.`}</p>
+          : !source
+            ? "Rejected goods leave stock and are recorded as scrap. This stock was held from inventory, not from a delivery, so it cannot be returned to a supplier."
+            : `Rejected goods leave stock and are recorded as ${disposition === "Scrap" ? "scrap" : "returned to the supplier"}. The quantity stays owed on ${source.receipt.purchase_order.display_id} for redelivery, unless the order is closed.`}</p>
       </div>}
 
       {hold?.events && <div className="audit-timeline" aria-label="Inspection history">

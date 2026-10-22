@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback, useRef, type FormEvent } from "react";
+import { flushSync } from "react-dom";
 import {
   navItems,
   type PageName,
@@ -17,13 +18,16 @@ import {
   useToast,
   type IconName,
 } from "./components/ui";
-import { getMaterial, getMaterialSummary, getMaterialTransactions, getReferenceData, listMaterials, type ApiMaterial, type MaterialSummary, type MaterialTransaction, type ReferenceData } from "./api/materials";
+import { MATERIAL_STATUSES, getMaterial, getMaterialSummary, getMaterialTransactions, getReferenceData, listMaterials, type ApiMaterial, type MaterialStatus, type MaterialSummary, type MaterialTransaction, type ReferenceData } from "./api/materials";
 import { ApiError } from "./api/client";
 import { TRANSFER_STATUS_LABEL, getTransferSummary, listTransfers, type Transfer, type TransferStatus, type TransferSummary } from "./api/transfers";
 import { MaterialDialog } from "./components/MaterialDialog";
 import { TransferDialog } from "./components/TransferDialog";
 import { TransferActionDialog } from "./components/TransferActionDialog";
 import { InspectionDialog, inspectionTone } from "./components/InspectionDialog";
+import { NewInspectionDialog } from "./components/NewInspectionDialog";
+import { printAs } from "./components/print";
+import { AlertsMenu } from "./components/AlertsMenu";
 import { INSPECTION_STATUSES, getInspectionSummary, listInspections, type Inspection, type InspectionStatus, type InspectionSummary } from "./api/inspections";
 import { PurchaseOrderDialog } from "./components/PurchaseOrderDialog";
 import { PurchaseOrderDetailDialog, orderTone } from "./components/PurchaseOrderDetailDialog";
@@ -35,7 +39,12 @@ import { AUDIT_SOURCES, listAuditEvents, type AuditEvent, type AuditSource } fro
 import { getHealth } from "./api/health";
 import { API_BASE_URL } from "./api/client";
 import { getAnalyticsOverview, type AnalyticsOverview } from "./api/analytics";
+import { QrLabelDialog } from "./components/QrLabel";
+import { auditCsv, downloadCsv, inventoryCsv } from "./api/csvExport";
 import { CURRENT_USER } from "./currentUser";
+
+// The QR decoder is loaded only when the camera is started.
+const QrScanner = lazy(() => import("./components/QrScanner").then((m) => ({ default: m.QrScanner })));
 
 const INVENTORY_PAGE_SIZE = 25;
 
@@ -102,7 +111,7 @@ function Sidebar({ active, onNavigate, open, onClose, lowStockCount, apiStatus }
   </>;
 }
 
-function Topbar({ onMenu, onNavigate, onSearch, apiStatus }: { onMenu: () => void; onNavigate: (page: PageName) => void; onSearch: (text: string) => void; apiStatus: ApiStatus }) {
+function Topbar({ onMenu, onNavigate, onSearch, apiStatus, yards, yard, onYard }: { onMenu: () => void; onNavigate: (page: PageName) => void; onSearch: (text: string) => void; apiStatus: ApiStatus; yards: { id: string; name: string }[]; yard: string; onYard: (yard: string) => void }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [text, setText] = useState("");
   const input = useRef<HTMLInputElement>(null);
@@ -122,8 +131,8 @@ function Topbar({ onMenu, onNavigate, onSearch, apiStatus }: { onMenu: () => voi
     </div>
     <div className="topbar-actions">
       <div className="offline-pill" title={apiStatus.checkedAt ? `Checked at ${checkedTime(apiStatus.checkedAt)}` : undefined}><Icon name={apiStatus.state === "online" ? "check" : "warning"} size={14}/><span>{apiStatusLabel(apiStatus)}</span></div>
-      <Select aria-label="Select yard" disabled title="A global yard selection isn’t available yet — use the yard filters on each page" value=""><option value="">All yards</option></Select>
-      <button className="icon-button notification-button" aria-label="Notifications (not available yet)" title="Notifications aren’t available yet" disabled><Icon name="bell"/></button>
+      <Select aria-label="Select yard" title="Filters Inventory and Movements by yard; other pages show all yards" value={yard} onChange={(e) => onYard(e.target.value)}><option value="">All yards</option>{yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select>
+      <AlertsMenu onNavigate={onNavigate}/>
       <button className="profile" onClick={() => onNavigate("Settings")}><span className="avatar">{CURRENT_USER.initials}</span><span className="profile-copy"><strong>{CURRENT_USER.name}</strong><small>{CURRENT_USER.role}</small></span><Icon name="chevron" size={14}/></button>
     </div>
   </header>;
@@ -223,9 +232,15 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
   const view = (label: string): KpiView =>
     label === "Pending transfers" ? pendingTransfersKpi(transferSummary, transferError) : materialKpi(label, materials);
   const errorFor = (label: string) => (label === "Pending transfers" ? transferError : materials.error) || undefined;
+  // The report prints what is on screen, so wait until every card has its data (or its error).
+  const stillLoading = [[materials.data, materials.error], [transferSummary, transferError], [lowStock, lowStockError],
+    [movements, movementsError], [ships, shipsError], [delayed, delayedError]].some(([data, error]) => !data && !error);
+  const [printedAt, setPrintedAt] = useState<Date | null>(null);
+  const printReport = () => { flushSync(() => setPrintedAt(new Date())); printAs("report"); };
 
   return <>
-    <PageHeader eyebrow="Operations overview" title={greeting} description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download" disabled title="Export is not available yet">Export report</Button><Button icon="plus" onClick={() => onNavigate("Procurement")}>Receive material</Button></>}/>
+    <div className="print-only report-heading"><h1>Dashboard report</h1><p>Dockyard Materials Command · printed {printedAt?.toLocaleString()} · figures as loaded on screen at that time</p></div>
+    <PageHeader eyebrow="Operations overview" title={greeting} description="Here’s what needs your attention across all active shipbuilding programs." actions={<><Button variant="secondary" icon="download" disabled={stillLoading} title={stillLoading ? "Waiting for the dashboard to finish loading" : "Print the dashboard or save it as a PDF"} onClick={printReport}>Export report</Button><Button icon="plus" onClick={() => onNavigate("Procurement")}>Receive material</Button></>}/>
     <div className="kpi-grid">
       {DASHBOARD_KPIS.map((kpi, index) => { const v = view(kpi.label); return <Card className="kpi-card" key={kpi.label}><div className={`kpi-icon kpi-${index}`}><Icon name={kpi.icon}/></div><div className="kpi-label">{kpi.label}</div><div className="kpi-value-row"><strong>{v.value}</strong><Badge tone={v.tone}>{v.delta}</Badge></div><p title={errorFor(kpi.label)}>{v.detail}</p></Card>; })}
     </div>
@@ -258,7 +273,7 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
           {ships?.map((ship) => <div className="ship-row" key={ship.id}><div className="ship-avatar"><Icon name="ship"/></div><div className="ship-progress"><span><strong>{ship.name}</strong><b>{ship.allocated_batches} batch{ship.allocated_batches === 1 ? "" : "es"}</b></span><small>{ship.build_status} · {ship.build_progress}% complete · {ship.yard}</small><Progress value={ship.build_progress}/></div></div>)}
         </div>
       </Card>
-      <Card className="recommendation-card span-2">
+      <Card className="recommendation-card span-2 no-print">
         <div className="recommendation-head"><span className="ai-mark"><Icon name="sparkles"/></span><div><span className="eyebrow">AI recommendation</span><h2>No recommendations available</h2></div><Badge tone="neutral">Not connected</Badge></div>
         <p>No AI model is connected, so no reallocation or purchasing suggestions are generated. Nothing on this card is computed from your data yet.</p>
         <div className="recommendation-actions"><span><Icon name="lock" size={14}/> Any future suggestion will require human approval before it changes stock</span></div>
@@ -277,15 +292,20 @@ function Dashboard({ onNavigate, materials }: { onNavigate: (page: PageName) => 
   </>;
 }
 
-function Inventory({ onMaterialsChanged, searchRequest }: { onMaterialsChanged: () => void; searchRequest: { text: string; n: number } | null }) {
+function Inventory({ onMaterialsChanged, searchRequest, globalYard }: { onMaterialsChanged: () => void; searchRequest: { text: string; n: number } | null; globalYard: string }) {
   const [query, setQuery] = useState(searchRequest?.text ?? "");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
-  const [yard, setYard] = useState("");
+  const [yard, setYard] = useState(globalYard);
+  const [status, setStatus] = useState<MaterialStatus | "">("");
+  const [ship, setShip] = useState("");
+  const [moreFilters, setMoreFilters] = useState(false);
   const [skip, setSkip] = useState(0);
   const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
   const [loadError, setLoadError] = useState("");
   const [dialog, setDialog] = useState<{ material?: ApiMaterial } | null>(null);
+  const [labelFor, setLabelFor] = useState<ApiMaterial | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [toast, act] = useToast();
   const [items, setItems] = useState<ApiMaterial[]>([]);
   const [total, setTotal] = useState(0);
@@ -297,6 +317,9 @@ function Inventory({ onMaterialsChanged, searchRequest }: { onMaterialsChanged: 
     const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
     return () => window.clearTimeout(id);
   }, [query]);
+
+  // The yard chosen in the top bar; the page's own yard filter can still change it here.
+  useEffect(() => { setYard(globalYard); setShip(""); setSkip(0); }, [globalYard]);
 
   // A search typed in the top bar while Inventory is already open.
   useEffect(() => { if (searchRequest) setQuery(searchRequest.text); }, [searchRequest]);
@@ -312,7 +335,7 @@ function Inventory({ onMaterialsChanged, searchRequest }: { onMaterialsChanged: 
   useEffect(() => {
     const controller = new AbortController();
     setState("loading");
-    listMaterials({ skip, limit: INVENTORY_PAGE_SIZE, search, category, yard }, controller.signal)
+    listMaterials({ skip, limit: INVENTORY_PAGE_SIZE, search, category, yard, ship, status: status || undefined }, controller.signal)
       .then(({ materials: loaded, total: count }) => {
         setItems(loaded);
         setTotal(count);
@@ -324,25 +347,62 @@ function Inventory({ onMaterialsChanged, searchRequest }: { onMaterialsChanged: 
         setState("error");
       });
     return () => controller.abort();
-  }, [skip, search, category, yard, reloadKey]);
+  }, [skip, search, category, yard, ship, status, reloadKey]);
 
   const afterSave = (message: string) => { setDialog(null); act(message); setReloadKey((k) => k + 1); onMaterialsChanged(); };
+  const extraFilters = (status ? 1 : 0) + (ship ? 1 : 0);
+  const filtered = Boolean(search || category || yard || extraFilters);
+  const clearFilters = () => { setQuery(""); setSearch(""); setCategory(""); setYard(""); setStatus(""); setShip(""); setSkip(0); };
+  // Ships of the selected yard, or of every yard.
+  const shipOptions = refs?.ships.filter((s) => !yard || s.yard_id === yard) ?? [];
+  // Exports every batch matching the current search and filters, not just the page on screen.
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const { csv, count } = await inventoryCsv({ search, category, yard, ship, status: status || undefined });
+      if (count === 0) { act("No materials match the current filters"); return; }
+      downloadCsv(csv, `inventory-${new Date().toISOString().slice(0, 10)}.csv`);
+      act(`Exported ${count} material${count === 1 ? "" : "s"}`);
+    } catch (err) {
+      act(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
   const firstShown = total === 0 ? 0 : skip + 1;
   return <>
-    <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" disabled title="Export is not available yet">Export</Button><Button icon="plus" onClick={() => setDialog({})}>Add material</Button></>}/>
+    <PageHeader eyebrow="Material control" title="Inventory" description="Track, reserve and issue materials across yards and ship programs." actions={<><Button variant="secondary" icon="download" disabled={exporting} title="Download the materials matching the current filters as CSV" onClick={exportCsv}>{exporting ? "Exporting…" : "Export"}</Button><Button icon="plus" onClick={() => setDialog({})}>Add material</Button></>}/>
     <Card className="table-card">
       <div className="table-toolbar">
         <Input icon="search" placeholder="Search by material ID, name or batch…" value={query} onChange={(e) => setQuery(e.target.value)}/>
-        <div className="toolbar-filters"><Select aria-label="Filter by category" value={category} onChange={(e) => { setCategory(e.target.value); setSkip(0); }}><option value="">All categories</option>{refs?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select><Select aria-label="Filter by yard" value={yard} onChange={(e) => { setYard(e.target.value); setSkip(0); }}><option value="">All yards</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select><Button variant="secondary" icon="filter" disabled title="Additional filters are not available yet">Filters</Button></div>
+        <div className="toolbar-filters"><Select aria-label="Filter by category" value={category} onChange={(e) => { setCategory(e.target.value); setSkip(0); }}><option value="">All categories</option>{refs?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select><Select aria-label="Filter by yard" value={yard} onChange={(e) => {
+          const next = e.target.value;
+          setYard(next);
+          // A ship from another yard would match nothing, so drop it.
+          if (ship && next && refs?.ships.find((s) => s.id === ship)?.yard_id !== next) setShip("");
+          setSkip(0);
+        }}><option value="">All yards</option>{refs?.yards.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</Select><Button variant="secondary" icon="filter" aria-expanded={moreFilters} aria-controls="inventory-more-filters" onClick={() => setMoreFilters((v) => !v)}>{extraFilters ? `Filters · ${extraFilters}` : "Filters"}</Button></div>
       </div>
+      {moreFilters && <div className="filter-row" id="inventory-more-filters">
+        <Select aria-label="Filter by status" value={status} onChange={(e) => { setStatus(e.target.value as MaterialStatus | ""); setSkip(0); }}><option value="">All statuses</option>{MATERIAL_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</Select>
+        <Select aria-label="Filter by ship" value={ship} onChange={(e) => { setShip(e.target.value); setSkip(0); }}><option value="">All ships</option>{shipOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select>
+        {filtered && <Button variant="ghost" onClick={clearFilters}>Clear all</Button>}
+      </div>}
       {state === "error" && <div className="notice" role="alert"><Icon name="warning"/>{loadError}</div>}
-      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved{item.held_quantity ? ` · ${item.held_quantity} on inspection hold` : ""}</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`Edit ${item.id}`} title="Edit or delete" onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
-      <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} materials` : `${total} materials`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - INVENTORY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + INVENTORY_PAGE_SIZE)}>Next</Button></div></div>
+      {state !== "ready" ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)}/> : <div className="table-scroll"><table><thead><tr><th>Material</th><th>Batch</th><th>Stock</th><th>Allocation</th><th>Location</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><div className="material-name"><span className="material-icon"><Icon name="box"/></span><span><strong>{item.name}</strong><small>{item.id} · {item.category.name}</small></span></div></td><td><strong className="mono">{item.batch}</strong><small>{item.quantity} {item.unit} total</small></td><td><strong>{item.available}</strong><small>{item.reserved} reserved{item.held_quantity ? ` · ${item.held_quantity} on inspection hold` : ""}</small></td><td><strong>{item.ship?.name ?? "Unassigned"}</strong><small>{item.quantity ? Math.round(item.reserved / item.quantity * 100) : 0}% allocated</small></td><td><strong>{item.yard.name}</strong><small>{item.location ? `Zone ${item.location.zone}` : "No location"}</small></td><td><Badge tone={statusTone(item.status)}>{item.status}</Badge></td><td><button className="icon-button" aria-label={`QR label for ${item.id}`} title="Print QR label" onClick={() => setLabelFor(item)}><Icon name="qr"/></button><button className="icon-button" aria-label={`Edit ${item.id}`} title="Edit or delete" onClick={() => setDialog({ material: item })}><Icon name="more"/></button></td></tr>)}</tbody></table></div>}
+      <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} materials${pageOf(skip, total, INVENTORY_PAGE_SIZE)}` : `${total} materials`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - INVENTORY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + INVENTORY_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
+    {labelFor && <QrLabelDialog material={labelFor} onClose={() => setLabelFor(null)}/>}
     {dialog && <MaterialDialog material={dialog.material} refs={refs} refsError={refsError} onClose={() => setDialog(null)} onDone={afterSave}/>}
     <Toast message={toast}/>
   </>;
 }
+
+/** " · page 2 of 3" for a list footer. Previous/Next stay disabled while everything fits on one page. */
+const pageOf = (skip: number, total: number, size: number) =>
+  ` · page ${Math.floor(skip / size) + 1} of ${Math.max(1, Math.ceil(total / size))}`;
+
+const YARD_KEY = "dockyard.yard";
 
 const MOVEMENT_ACTION: Partial<Record<TransferStatus, string>> = { Requested: "Review", Approved: "Dispatch", Dispatched: "Receive" };
 
@@ -354,7 +414,7 @@ const formatMoment = (iso: string) =>
 const ledgerQuantity = (type: string, quantity: number, reference: string | null) =>
   type === "Adjustment" && !reference ? (quantity > 0 ? `+${quantity}` : quantity < 0 ? `−${-quantity}` : "0") : String(quantity);
 
-function Movements() {
+function Movements({ globalYard, yardName, onAllYards }: { globalYard: string; yardName: string; onAllYards: () => void }) {
   const [tab, setTab] = useState(MOVEMENT_TABS[0]);
   const [skip, setSkip] = useState(0);
   const [state, setState] = useState<"ready" | "loading" | "empty" | "error">("loading");
@@ -381,7 +441,7 @@ function Movements() {
     const controller = new AbortController();
     setState("loading");
     getTransferSummary(controller.signal).then(setSummary).catch(() => { if (!controller.signal.aborted) setSummary(null); });
-    listTransfers(tab.statuses, { skip, limit: MOVEMENT_PAGE_SIZE }, controller.signal)
+    listTransfers(tab.statuses, { skip, limit: MOVEMENT_PAGE_SIZE, yard: globalYard }, controller.signal)
       .then(({ transfers, total: count }) => {
         setItems(transfers);
         setTotal(count);
@@ -393,7 +453,9 @@ function Movements() {
         setState("error");
       });
     return () => controller.abort();
-  }, [tab, skip, reloadKey]);
+  }, [tab, skip, reloadKey, globalYard]);
+
+  useEffect(() => setSkip(0), [globalYard]);
 
   const done = useCallback((message: string) => {
     setCreating(false);
@@ -411,7 +473,8 @@ function Movements() {
   ];
 
   return <><PageHeader eyebrow="Material logistics" title="Movements" description="Approve, dispatch and receive transfers between yards." actions={<Button icon="plus" onClick={() => setCreating(true)}>Create transfer</Button>}/>
-    <div className="mini-kpis">{cards.map(([label, value, tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={tone}>Live queue</Badge></Card>)}</div>
+    <div className="mini-kpis">{cards.map(([label, value, tone]) => <Card key={label}><span>{label}</span><strong>{value}</strong><Badge tone={globalYard ? "neutral" : tone}>{globalYard ? "All yards" : "Live queue"}</Badge></Card>)}</div>
+    {globalYard && <div className="notice yard-notice"><Icon name="filter"/><span>Showing transfers from or to <strong>{yardName}</strong>, the yard selected in the top bar. The queue figures above cover all yards.</span><Button variant="ghost" onClick={onAllYards}>Show all yards</Button></div>}
     <Card className="table-card"><div className="tabs">{MOVEMENT_TABS.map(item => <button className={tab.label === item.label ? "active" : ""} onClick={() => { setTab(item); setSkip(0); }} key={item.label}>{item.label}</button>)}</div>
       {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
       {state !== "ready"
@@ -422,7 +485,7 @@ function Movements() {
           const action = MOVEMENT_ACTION[t.status];
           return <div className="movement-row" key={t.id}><span className="movement-icon"><Icon name="movement"/></span><div className="movement-main"><span><strong>{t.material.name}</strong><Badge tone={statusTone(label)}>{label}</Badge></span><p>{t.from_yard.name}{t.from_location ? ` (Zone ${t.from_location.zone})` : ""} → {t.to_yard.name}{t.to_location ? ` (Zone ${t.to_location.zone})` : ""}</p></div><div><strong>{t.quantity} {t.unit}</strong><small>{t.display_id}</small></div><div><strong>{last ? formatMoment(last.created_at) : formatMoment(t.updated_at)}</strong><small>Updated by {last?.actor ?? t.requested_by}</small></div><Button variant={t.status === "Requested" ? "primary" : "secondary"} onClick={() => setOpenId(t.id)}>{action ?? "Details"}</Button></div>;
         })}</div>}
-      <div className="table-footer"><span>{state === "ready" ? `Showing ${skip + 1}–${skip + items.length} of ${total} transfers` : `${total} transfers`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - MOVEMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + MOVEMENT_PAGE_SIZE)}>Next</Button></div></div>
+      <div className="table-footer"><span>{state === "ready" ? `Showing ${skip + 1}–${skip + items.length} of ${total} transfers${pageOf(skip, total, MOVEMENT_PAGE_SIZE)}` : `${total} transfers`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - MOVEMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + MOVEMENT_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     {creating && <TransferDialog refs={refs} refsError={refsError} onClose={() => setCreating(false)} onDone={done}/>}
     {openId !== null && <TransferActionDialog transferId={openId} tone={statusTone} onClose={() => setOpenId(null)} onDone={done}/>}
@@ -441,6 +504,8 @@ const HISTORY_ROWS = 15;
 function QRTracking() {
   const [lookup, setLookup] = useState("");
   const [result, setResult] = useState<Lookup>({ phase: "idle" });
+  const [scanning, setScanning] = useState(false);
+  const [label, setLabel] = useState<ApiMaterial | null>(null);
 
   const show = async (material: ApiMaterial) => {
     setResult({ phase: "found", material, history: null, historyTotal: 0, historyError: "" });
@@ -452,9 +517,8 @@ function QRTracking() {
     }
   };
 
-  const search = async (event: FormEvent) => {
-    event.preventDefault();
-    const q = lookup.trim();
+  const runLookup = async (raw: string) => {
+    const q = raw.trim();
     if (!q) return setResult({ phase: "none", message: "Enter a batch ID, name or lot number." });
     setResult({ phase: "searching" });
     try {
@@ -472,16 +536,23 @@ function QRTracking() {
     }
   };
 
+  const search = (event: FormEvent) => { event.preventDefault(); runLookup(lookup); };
+  // A scanned label holds the batch ID; look it up exactly as if it had been typed.
+  const onScan = (text: string) => { setScanning(false); setLookup(text); runLookup(text); };
+
   const m = result.phase === "found" ? result.material : null;
   const last = result.phase === "found" ? result.history?.[0] : undefined;
   return <><PageHeader eyebrow="Traceability" title="QR tracking" description="Look up material identity, custody and allocation records."/>
-    <div className="two-column"><Card className="scanner-card"><span className="scanner-corners"><Icon name="scan" size={42}/></span><h2>QR scanning not available</h2><p>Camera scanning isn’t set up: it needs a QR-scanning library that hasn’t been approved yet.</p><Button variant="secondary" disabled>Camera unavailable</Button><small>Use manual lookup — a scanned label would resolve to the same batch ID.</small></Card>
+    <div className="two-column"><Card className="scanner-card">{scanning
+      ? <Suspense fallback={<p>Loading scanner…</p>}><QrScanner onResult={onScan} onClose={() => setScanning(false)}/></Suspense>
+      : <><span className="scanner-corners"><Icon name="scan" size={42}/></span><h2>Scan a batch label</h2><p>Use the device camera to read a batch QR label. Labels can be printed from Inventory or from a batch shown here.</p><Button variant="secondary" icon="scan" onClick={() => setScanning(true)}>Start camera</Button><small>The camera works when the app is opened at http://localhost or over HTTPS.</small></>}</Card>
     <Card><div className="card-heading"><div><h2>Manual lookup</h2><p>Enter a batch ID, or search by name or lot number</p></div></div>
       <form className="lookup-row" onSubmit={search}><Input aria-label="Batch ID, name or lot number" placeholder="e.g. PO-00001-1" value={lookup} onChange={(e) => setLookup(e.target.value)}/><Button type="submit" disabled={result.phase === "searching"}>{result.phase === "searching" ? "Looking up…" : "Look up"}</Button></form>
       {result.phase === "error" && <div className="notice" role="alert" style={{ margin: "16px 0 0" }}><Icon name="warning"/>{result.message}</div>}
       {result.phase === "choose" && <div className="material-detail"><p>{result.total > result.matches.length ? `Showing the first ${result.matches.length} of ${result.total} matches — refine the search or choose one` : `${result.total} batches match — choose one`}</p><div className="alert-list">{result.matches.map((c) => <button type="button" className="alert-row" key={c.id} onClick={() => show(c)}><span className="severity warning"><Icon name="box" size={16}/></span><span><strong>{c.name}</strong><small>{c.id} · Lot {c.batch} · {c.yard.name}</small></span><span className="alert-amount">{c.available} {c.unit} available<Icon name="chevron" size={14}/></span></button>)}</div></div>}
       {m ? <div className="material-detail">
         <Badge tone={statusTone(m.status)}>{m.status}</Badge><h3>{m.name}</h3><p>{m.id} · Batch {m.batch} · {m.category.name}</p>
+        <div style={{ marginTop: 10 }}><Button type="button" variant="secondary" icon="qr" onClick={() => setLabel(m)}>Print label</Button></div>
         <dl>
           <div><dt>Available</dt><dd>{m.available} {m.unit}</dd></div>
           <div><dt>On hand</dt><dd>{m.quantity} {m.unit}{m.reserved ? ` · ${m.reserved} reserved` : ""}{m.held_quantity ? ` · ${m.held_quantity} on inspection hold` : ""}</dd></div>
@@ -494,6 +565,7 @@ function QRTracking() {
           <div className="audit-timeline" style={{ padding: 0 }} aria-label="Custody history">{result.history.map((t) => <div className="audit-event" key={t.id}><span className="audit-dot"><Icon name="check" size={14}/></span><div><strong>{t.transaction_type} · {ledgerQuantity(t.transaction_type, t.quantity, t.reference_id)} {t.unit}</strong><p>{t.actor}{t.reference_id ? ` · ${t.reference_id}` : ""}{t.reason ? ` · ${t.reason}` : ""}</p></div><div><small>{formatMoment(t.created_at)}</small></div></div>)}</div></>}
       </div> : (result.phase === "idle" || result.phase === "searching" || result.phase === "none") && <div className="lookup-empty"><Icon name="qr" size={28}/><strong>{result.phase === "none" ? result.message : "Awaiting batch ID"}</strong><span>Material details and custody history will appear here.</span></div>}
     </Card></div>
+    {label && <QrLabelDialog material={label} onClose={() => setLabel(null)}/>}
   </>;
 }
 
@@ -563,7 +635,7 @@ function ProcurementOrders({ suppliers, reloadKey, onOpen }: { suppliers: Suppli
           <td><Badge tone={po.is_overdue ? "danger" : orderTone(po.status)}>{po.is_overdue ? "Overdue" : po.status}</Badge></td>
         </tr>;
       })}</tbody></table></div>}
-    <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} purchase orders` : `${total} purchase orders`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
+    <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} purchase orders${pageOf(skip, total, PROCUREMENT_PAGE_SIZE)}` : `${total} purchase orders`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
   </>;
 }
 
@@ -611,7 +683,7 @@ function ProcurementSuppliers({ reloadKey, onEdit }: { reloadKey: number; onEdit
         <td><Badge tone={supplierTone(s.status)}>{s.status}</Badge></td>
         <td><button className="icon-button" aria-label={`Edit ${s.id}`} title="Edit supplier" onClick={() => onEdit(s)}><Icon name="more"/></button></td>
       </tr>)}</tbody></table></div>}
-    <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} suppliers` : `${total} suppliers`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
+    <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} suppliers${pageOf(skip, total, PROCUREMENT_PAGE_SIZE)}` : `${total} suppliers`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - PROCUREMENT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + PROCUREMENT_PAGE_SIZE)}>Next</Button></div></div>
   </>;
 }
 
@@ -793,7 +865,7 @@ async function answerQuestion(question: string): Promise<AssistantAnswer> {
   if (/inspect|quality|hold\b|holds\b|qi-/.test(q)) {
     const { inspections: items, total } = await listInspections({ skip: 0, limit: 10, status: "Open" });
     return { title: "Open inspections", summary: total ? `${total} inspection hold${total === 1 ? " is" : "s are"} awaiting a decision.` : "No inspection holds are open.",
-      columns: ["Inspection", "Batch", "Awaiting", "Order"], rows: items.map((h) => [h.display_id, `${h.material.name} (${h.material.id})`, `${h.outstanding_quantity} ${h.material.unit}`, h.goods_receipt_line.receipt.purchase_order.display_id]), source: "Quality · status = Open", page: "Quality" };
+      columns: ["Inspection", "Batch", "Awaiting", "Order"], rows: items.map((h) => [h.display_id, `${h.material.name} (${h.material.id})`, `${h.outstanding_quantity} ${h.material.unit}`, h.goods_receipt_line?.receipt.purchase_order.display_id ?? "Held from stock"]), source: "Quality · status = Open", page: "Quality" };
   }
   if (/supplier/.test(q)) {
     const { suppliers } = await getAnalyticsOverview();
@@ -970,6 +1042,7 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   const [summaryError, setSummaryError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
   const [toast, showToast] = useToast();
 
   useEffect(() => {
@@ -999,6 +1072,7 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
 
   const done = useCallback((message: string) => {
     setOpenId(null);
+    setCreating(false);
     showToast(message);
     setReloadKey((k) => k + 1);
     onMaterialsChanged();
@@ -1014,7 +1088,7 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
   ];
   const firstShown = total === 0 ? 0 : skip + 1;
 
-  return <><PageHeader eyebrow="Material assurance" title="Quality inspections" description="Release or reject goods held for inspection on receipt." actions={<Button icon="plus" disabled title="Inspections start when goods are received with Hold for inspection">New inspection</Button>}/>
+  return <><PageHeader eyebrow="Material assurance" title="Quality inspections" description="Release or reject stock held for inspection, on receipt or from inventory." actions={<Button icon="plus" title="Hold part of a batch's available stock for inspection" onClick={() => setCreating(true)}>New inspection</Button>}/>
     <div className="mini-kpis">{cards.map(([l, v, badge, t]) => <Card key={l}><span>{l}</span><strong>{v}</strong><Badge tone={badge === "Live" ? t : "neutral"}>{badge}</Badge></Card>)}</div>
     <Card className="table-card">
       <div className="table-toolbar">
@@ -1023,21 +1097,24 @@ function Quality({ onMaterialsChanged }: { onMaterialsChanged: () => void }) {
       </div>
       {state === "error" && <div className="notice" role="alert" style={{ marginTop: 14 }}><Icon name="warning"/>{loadError}</div>}
       {state !== "ready"
-        ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)} title={state === "loading" ? "Loading inspections" : state === "empty" ? "No inspections here" : "Inspections couldn’t be loaded"} message={state === "loading" ? "Fetching inspection holds…" : state === "empty" ? "Goods received with Hold for inspection appear here until they are released or rejected." : undefined}/>
+        ? <StatePanel type={state} onRetry={() => setReloadKey((k) => k + 1)} title={state === "loading" ? "Loading inspections" : state === "empty" ? "No inspections here" : "Inspections couldn’t be loaded"} message={state === "loading" ? "Fetching inspection holds…" : state === "empty" ? "Goods received with Hold for inspection, and stock held with New inspection, appear here until they are released or rejected." : undefined}/>
         : <div className="table-scroll"><table><thead><tr><th>Inspection</th><th>Material</th><th>Source</th><th>Quantity</th><th>Status</th><th aria-label="Actions"/></tr></thead><tbody>{items.map((h) => {
-          const receipt = h.goods_receipt_line.receipt;
+          const receipt = h.goods_receipt_line?.receipt;
           return <tr key={h.id}>
             <td><strong className="mono">{h.display_id}</strong><small>Held {formatMoment(h.created_at)} by {h.created_by}</small></td>
             <td><strong>{h.material.name}</strong><small>{h.material.id} · Lot {h.material.batch} · {h.material.yard.name}</small></td>
-            <td><strong className="mono">{receipt.purchase_order.display_id}</strong><small>{receipt.display_id} · {receipt.purchase_order.supplier.name}</small></td>
+            <td>{receipt
+              ? <><strong className="mono">{receipt.purchase_order.display_id}</strong><small>{receipt.display_id} · {receipt.purchase_order.supplier.name}</small></>
+              : <><strong>Held from stock</strong><small>No supplier delivery</small></>}</td>
             <td><strong>{h.outstanding_quantity} {h.material.unit} awaiting</strong><small>{h.released_quantity} released · {h.rejected_quantity} rejected of {h.quantity}</small></td>
             <td><Badge tone={inspectionTone(h.status)}>{h.status}</Badge></td>
             <td><Button variant={h.status === "Open" ? "primary" : "secondary"} onClick={() => setOpenId(h.id)}>{h.status === "Open" ? "Review" : "Details"}</Button></td>
           </tr>;
         })}</tbody></table></div>}
-      <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} inspections` : `${total} inspections`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - QUALITY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + QUALITY_PAGE_SIZE)}>Next</Button></div></div>
+      <div className="table-footer"><span>{state === "ready" ? `Showing ${firstShown}–${skip + items.length} of ${total} inspections${pageOf(skip, total, QUALITY_PAGE_SIZE)}` : `${total} inspections`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - QUALITY_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading"} onClick={() => setSkip(skip + QUALITY_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     {openId !== null && <InspectionDialog inspectionId={openId} onClose={() => setOpenId(null)} onDone={done}/>}
+    {creating && <NewInspectionDialog onClose={() => setCreating(false)} onDone={done}/>}
     <Toast message={toast}/>
   </>;
 }
@@ -1063,6 +1140,8 @@ function AuditLogs() {
   const [items, setItems] = useState<AuditEvent[]>([]);
   const [total, setTotal] = useState(0);
   const [retryKey, setRetryKey] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [toast, showToast] = useToast();
 
   useEffect(() => {
     const id = window.setTimeout(() => { setSearch(query.trim()); setSkip(0); }, 300);
@@ -1083,7 +1162,21 @@ function AuditLogs() {
 
   const filtered = Boolean(search || source || dateFrom || dateTo);
   const firstShown = total === 0 ? 0 : skip + 1;
-  return <><PageHeader eyebrow="Traceable operations" title="Audit logs" description="Recorded stock, transfer, purchase-order and inspection activity, newest first." actions={<Button variant="secondary" icon="download" disabled title="Export is not available yet">Export log</Button>}/>
+  // Exports every event matching the current search, type and date range, not just the page on screen.
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const { csv, count } = await auditCsv({ search, source: source || undefined, dateFrom, dateTo });
+      if (count === 0) { showToast("No events match the current filters"); return; }
+      downloadCsv(csv, `audit-log-${new Date().toISOString().slice(0, 10)}.csv`);
+      showToast(`Exported ${count} event${count === 1 ? "" : "s"}`);
+    } catch (err) {
+      showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+  return <><PageHeader eyebrow="Traceable operations" title="Audit logs" description="Recorded stock, transfer, purchase-order and inspection activity, newest first." actions={<Button variant="secondary" icon="download" disabled={exporting || Boolean(rangeError)} title="Download the events matching the current filters as CSV" onClick={exportCsv}>{exporting ? "Exporting…" : "Export log"}</Button>}/>
     <Card className="audit-card">
       <div className="table-toolbar">
         <Input icon="search" aria-label="Search audit events" placeholder="Search batch, material, PO-/TR-/QI-/GR- number, actor or reason…" value={query} onChange={(e) => setQuery(e.target.value)}/>
@@ -1104,9 +1197,10 @@ function AuditLogs() {
             <p>{[e.actor, e.subject && (e.batch ? `${e.subject} (lot ${e.batch})` : e.subject), e.reason, e.detail].filter(Boolean).join(" · ")}</p></div>
           <div><strong className="mono">{e.record ?? "—"}</strong><small>{formatMoment(e.created_at)}</small></div>
         </div>)}</div>)}
-      <div className="table-footer"><span>{state === "ready" && !rangeError ? `Showing ${firstShown}–${skip + items.length} of ${total} events` : `${rangeError ? 0 : total} events`}</span><div><Button variant="ghost" disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - AUDIT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" disabled={skip + items.length >= total || state === "loading" || Boolean(rangeError)} onClick={() => setSkip(skip + AUDIT_PAGE_SIZE)}>Next</Button></div></div>
+      <div className="table-footer"><span>{state === "ready" && !rangeError ? `Showing ${firstShown}–${skip + items.length} of ${total} events${pageOf(skip, total, AUDIT_PAGE_SIZE)}` : `${rangeError ? 0 : total} events`}</span><div><Button variant="ghost" title={skip === 0 ? "This is the first page" : undefined} disabled={skip === 0 || state === "loading"} onClick={() => setSkip(Math.max(0, skip - AUDIT_PAGE_SIZE))}>Previous</Button><Button variant="secondary" title={skip + items.length >= total ? "This is the last page" : undefined} disabled={skip + items.length >= total || state === "loading" || Boolean(rangeError)} onClick={() => setSkip(skip + AUDIT_PAGE_SIZE)}>Next</Button></div></div>
     </Card>
     <p className="muted-copy" style={{ marginTop: 10 }}>Supplier changes are not recorded, and inventory edits made before stock adjustments were logged do not appear. Actor names are supplied by the app and are not verified — there is no sign-in yet.</p>
+    <Toast message={toast}/>
   </>;
 }
 
@@ -1131,13 +1225,14 @@ function Settings({ apiStatus }: { apiStatus: ApiStatus }) {
         {tab === "Roles & access" && <><p>Access control isn’t implemented yet.</p><div className="role-list">
           <SettingsRow icon="lock" title="No sign-in or roles" detail={`Everyone can use every page. Changes are recorded under the name ${CURRENT_USER.name}; names are not verified.`} badge="Not available" tone="warning"/>
         </div></>}
-        {tab === "Notifications" && <><p>Notifications aren’t implemented yet. Pending work is shown on the Dashboard, Movements, Procurement and Quality pages instead.</p><div className="role-list">
-          <SettingsRow icon="warning" title="Email and in-app notifications" detail="Nothing is sent or queued" badge="Not available" tone="warning"/>
+        {tab === "Notifications" && <><p>The bell in the top bar lists work that needs attention, read live from current records every minute and whenever it is opened. Nothing is stored, sent or marked as read.</p><div className="role-list">
+          <SettingsRow icon="bell" title="Live alerts" detail="Low-stock batches, overdue purchase orders, inspections awaiting a decision, transfers to approve, dispatch or receive" badge="Available" tone="success"/>
+          <SettingsRow icon="warning" title="Email and stored notifications" detail="Nothing is sent or queued; there is no read/unread history" badge="Not available" tone="warning"/>
         </div></>}
         {tab === "Integrations" && <><p>Connections this workspace uses.</p><div className="role-list">
           <SettingsRow icon="settings" title="Dockyard REST API" detail={API_BASE_URL} badge={apiStatusLabel(apiStatus)} tone={apiTone}/>
           <SettingsRow icon="sparkles" title="AI model" detail="None connected — the Assistant and Analytics pages use fixed rules over live data" badge="Not connected"/>
-          <SettingsRow icon="scan" title="QR scanner and label printer" detail="Not connected — QR Tracking supports manual lookup only" badge="Not connected"/>
+          <SettingsRow icon="scan" title="QR labels and camera scanning" detail="Print batch labels from Inventory or QR Tracking; scan them with the device camera on QR Tracking (needs http://localhost or HTTPS)" badge="Available" tone="success"/>
         </div></>}
         {tab === "Offline sync" && <><p>Offline use isn’t available.</p><div className="role-list">
           <SettingsRow icon="wifiOff" title="Offline cache and sync" detail="The app needs a live connection to the API; nothing is cached locally or synced later" badge="Not available" tone="warning"/>
@@ -1147,11 +1242,11 @@ function Settings({ apiStatus }: { apiStatus: ApiStatus }) {
   </>;
 }
 
-function CurrentPage({ page, onNavigate, materials, onMaterialsChanged, apiStatus, searchRequest }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState; onMaterialsChanged: () => void; apiStatus: ApiStatus; searchRequest: { text: string; n: number } | null }) {
+function CurrentPage({ page, onNavigate, materials, onMaterialsChanged, apiStatus, searchRequest, globalYard, yardName, onYard }: { page: PageName; onNavigate: (p: PageName) => void; materials: MaterialSummaryState; onMaterialsChanged: () => void; apiStatus: ApiStatus; globalYard: string; yardName: string; onYard: (yard: string) => void; searchRequest: { text: string; n: number } | null }) {
   switch (page) {
     case "Dashboard": return <Dashboard onNavigate={onNavigate} materials={materials}/>;
-    case "Inventory": return <Inventory onMaterialsChanged={onMaterialsChanged} searchRequest={searchRequest}/>;
-    case "Movements": return <Movements/>;
+    case "Inventory": return <Inventory onMaterialsChanged={onMaterialsChanged} searchRequest={searchRequest} globalYard={globalYard}/>;
+    case "Movements": return <Movements globalYard={globalYard} yardName={yardName} onAllYards={() => onYard("")}/>;
     case "QR Tracking": return <QRTracking/>;
     case "Ships & Yards": return <ShipsYards onNavigate={onNavigate}/>;
     case "Procurement": return <Procurement onMaterialsChanged={onMaterialsChanged}/>;
@@ -1172,6 +1267,23 @@ export default function App() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>({ state: "checking" });
   const [searchRequest, setSearchRequest] = useState<{ text: string; n: number } | null>(null);
   const onSearch = useCallback((text: string) => { setSearchRequest((r) => ({ text, n: (r?.n ?? 0) + 1 })); setPage("Inventory"); }, []);
+  // The top-bar yard filters Inventory and Movements. Remembered in this browser only.
+  const [globalYard, setGlobalYard] = useState(() => { try { return localStorage.getItem(YARD_KEY) ?? ""; } catch { return ""; } });
+  const [yards, setYards] = useState<{ id: string; name: string }[]>([]);
+  const onYard = useCallback((yard: string) => {
+    setGlobalYard(yard);
+    try { if (yard) localStorage.setItem(YARD_KEY, yard); else localStorage.removeItem(YARD_KEY); } catch { /* storage unavailable */ }
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    getReferenceData(controller.signal).then((r) => {
+      setYards(r.yards);
+      // A remembered yard that no longer exists would silently hide everything.
+      setGlobalYard((y) => (y && !r.yards.some((x) => x.id === y) ? "" : y));
+    }).catch(() => {});
+    return () => controller.abort();
+  }, []);
+  const yardName = yards.find((y) => y.id === globalYard)?.name ?? globalYard;
 
   // A real connection check every minute, shown in the top bar, sidebar and Settings.
   useEffect(() => {
@@ -1193,5 +1305,5 @@ export default function App() {
     return () => controller.abort();
   }, [page, materialsVersion]);
 
-  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null} apiStatus={apiStatus}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage} onSearch={onSearch} apiStatus={apiStatus}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged} apiStatus={apiStatus} searchRequest={searchRequest}/></main></div></div>;
+  return <div className="app-shell"><Sidebar active={page} onNavigate={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} lowStockCount={materials.data?.low_stock_batches ?? null} apiStatus={apiStatus}/><div className="app-main"><Topbar onMenu={() => setSidebarOpen(true)} onNavigate={setPage} onSearch={onSearch} apiStatus={apiStatus} yards={yards} yard={globalYard} onYard={onYard}/><main className="content"><CurrentPage page={page} onNavigate={setPage} materials={materials} onMaterialsChanged={onMaterialsChanged} apiStatus={apiStatus} searchRequest={searchRequest} globalYard={globalYard} yardName={yardName} onYard={onYard}/></main></div></div>;
 }

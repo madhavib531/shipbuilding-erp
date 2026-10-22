@@ -11,7 +11,7 @@ from app.models import (
 )
 from app.models.facility import StorageLocation, Yard
 from app.schemas.goods_receipt import GoodsReceiptCreate
-from app.schemas.inspection import InspectionReject, InspectionRelease
+from app.schemas.inspection import InspectionCreate, InspectionReject, InspectionRelease
 from app.schemas.material import MaterialUpdate
 from app.schemas.purchase_order import PurchaseOrderAction, PurchaseOrderCreate
 from app.schemas.transfer import TransferCreate
@@ -115,3 +115,38 @@ def test_inventory_edit_racing_release_cannot_free_held_stock(session_factory):
     results = run_concurrently(session_factory, [edit, _release(hid, 1, 4), edit])
     assert results[1] == "ok" and results[0] == results[2] == 422, results
     assert _stock(session_factory) == (10, 4, 0, 6)
+
+
+def _plain_batch(factory, available=5):
+    with factory() as s:
+        s.add(Material(id="M", name="Plate", category_id="C", batch="B", unit="u", quantity=available,
+                       available=available, reserved=0, yard_id="Y", location_id="L"))
+        s.commit()
+
+
+def _hold(quantity):
+    return lambda s: inspections.create_hold(s, InspectionCreate(actor="i", material_id="M", quantity=quantity, reason="r"))
+
+
+def test_concurrent_manual_holds_never_exceed_available(session_factory):
+    _plain_batch(session_factory)
+    results = run_concurrently(session_factory, [_hold(2)] * 4)
+    assert sorted(str(r[0] if isinstance(r, tuple) else r) for r in results) == ["422", "422", "ok", "ok"], results
+    with session_factory() as s:
+        m = s.get(Material, "M")
+        assert (m.quantity, m.available, inspections.held_quantity(s, "M")) == (5, 1, 4)
+        assert s.scalar(select(func.count()).select_from(InspectionHold)) == 2
+
+
+def test_manual_hold_racing_dispatch_uses_stock_once(session_factory):
+    _plain_batch(session_factory)
+    with session_factory() as s:
+        tid = transfers.create_transfer(s, TransferCreate(actor="t", material_id="M", quantity=3, to_yard_id="Y2"), None)[0]
+        transfers.approve(s, tid, "a", None)
+    results = run_concurrently(session_factory, [_hold(3), lambda s: transfers.dispatch(s, tid, "d", None)])
+    outcomes = [r[0] if isinstance(r, tuple) else r for r in results]
+    assert sorted(map(str, outcomes)) in (["409", "ok"], ["422", "ok"]), results
+    with session_factory() as s:
+        m = s.get(Material, "M")
+        held = inspections.held_quantity(s, "M")
+        assert m.available + held + (3 if outcomes[1] == "ok" else 0) == 5 and m.available == 2, (m.available, held)

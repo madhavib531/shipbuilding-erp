@@ -1,9 +1,13 @@
-"""Inspection holds on received goods and their audit history.
+"""Inspection holds on batch stock and their audit history.
 
 A hold keeps part of a batch's on-hand quantity out of `available` until an inspector releases it
 (it becomes available) or rejects it (it leaves stock as a return to the supplier or as scrap). Held
 stock is part of the batch's blocked quantity (quantity - available - reserved), so every path that
 allocates or moves stock through `available` excludes it without further checks.
+
+A hold is opened either by a goods receipt (it then has a receipt line, and rejected goods are still
+owed by the supplier) or by hand on stock already in a batch (no receipt line; rejected goods are
+scrapped).
 
 The material row lock guards hold quantities: holds are created and decided only while their batch is
 locked, so a reader holding that lock sees a stable held total.
@@ -49,7 +53,8 @@ class InspectionHold(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     material_id = Column(String(50), ForeignKey("materials.id"), nullable=False, index=True)
-    goods_receipt_line_id = Column(Integer, ForeignKey("goods_receipt_lines.id"), nullable=False, unique=True)
+    # NULL for a hold opened by hand on existing stock.
+    goods_receipt_line_id = Column(Integer, ForeignKey("goods_receipt_lines.id"), nullable=True, unique=True)
     quantity = Column(Integer, nullable=False)
     released_quantity = Column(Integer, nullable=False, default=0, server_default="0")
     rejected_quantity = Column(Integer, nullable=False, default=0, server_default="0")

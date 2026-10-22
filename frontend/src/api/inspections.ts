@@ -38,6 +38,7 @@ export type Inspection = {
     id: string; name: string; batch: string; unit: string; status: string; quantity: number; available: number;
     yard: Ref; location: { id: string; zone: string; aisle: string } | null;
   };
+  /** Null when the hold was opened by hand on stock already in the batch. */
   goods_receipt_line: {
     id: number;
     purchase_order_line: { line_no: number; description: string };
@@ -45,7 +46,7 @@ export type Inspection = {
       id: number; display_id: string; delivery_note: string | null; received_by: string; received_at: string;
       purchase_order: { id: number; display_id: string; supplier: Ref };
     };
-  };
+  } | null;
   events?: InspectionEvent[];
 };
 
@@ -71,6 +72,10 @@ export async function getInspectionSummary(signal?: AbortSignal) {
 export async function getInspection(id: number, signal?: AbortSignal) {
   return (await apiRequest<Envelope<Inspection>>(path(id), { signal })).data;
 }
+
+/** Holds part of a batch's available stock for inspection. */
+export const createInspection = (materialId: string, quantity: number, reason: string) =>
+  post("/api/v1/inspections", { material_id: materialId, quantity, reason });
 
 export const releaseInspection = (id: number, expectedVersion: number, quantity: number, note: string | null) =>
   post(path(id, "release"), { expected_version: expectedVersion, quantity, note });

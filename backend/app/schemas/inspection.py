@@ -12,6 +12,14 @@ Actor = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, ma
 Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 
 
+class InspectionCreate(BaseModel):
+    """Holds part of a batch's available stock for inspection."""
+    actor: Actor
+    material_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
+    quantity: int = Field(..., gt=0, description="Available quantity to hold")
+    reason: Reason
+
+
 class InspectionRelease(BaseModel):
     actor: Actor
     expected_version: int = Field(..., ge=1)
@@ -111,7 +119,7 @@ class InspectionHoldRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     material: _MaterialRef
-    goods_receipt_line: _ReceiptLineRef
+    goods_receipt_line: Optional[_ReceiptLineRef]  # None for a hold opened by hand on existing stock
 
 
 class InspectionHoldDetail(InspectionHoldRead):

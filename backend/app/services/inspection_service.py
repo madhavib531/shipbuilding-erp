@@ -1,12 +1,15 @@
-"""Inspection holds: opened by goods receipts, closed by release or rejection.
+"""Inspection holds: opened by goods receipts or by hand on existing stock, closed by release or rejection.
 
 Stock rules. A hold's outstanding quantity is on hand but blocked (counted in quantity, never in
-available). Release moves it into available with a RELEASE ledger row. Rejection removes it from on-hand
-stock with a RETURN or SCRAP ledger row, and moves it from received to rejected on the purchase-order
-line so the supplier still owes it (on a closed order it is cancelled instead, as closing does).
+available). A hold opened by hand takes its quantity out of the batch's available stock with an
+INSPECTION ledger row; on-hand quantity is unchanged. Release moves held stock into available with a
+RELEASE ledger row. Rejection removes it from on-hand stock with a RETURN or SCRAP ledger row. For a
+receipt hold it also moves the quantity from received to rejected on the purchase-order line so the
+supplier still owes it (on a closed order it is cancelled instead, as closing does). A hold opened by
+hand has no supplier delivery behind it, so its rejected stock can only be scrapped.
 
 Concurrency. Locks are taken in the same global order as goods receipts and transfers: purchase order,
-its lines, the hold, then the batch. The hold's version is checked under its lock, so a repeated or
+its lines, the hold, then the batch. Opening a hold by hand locks only the batch. The hold's version is checked under its lock, so a repeated or
 stale decision fails instead of applying twice. Each public mutation commits exactly once; callers
 roll back on any exception.
 """
@@ -24,7 +27,7 @@ from app.models.inspection import InspectionEvent, InspectionHold, InspectionSta
 from app.models.material import Material, MaterialStatusEnum
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderStatus
 from app.models.transaction import MaterialTransaction, TransactionType
-from app.schemas.inspection import InspectionReject, InspectionRelease
+from app.schemas.inspection import InspectionCreate, InspectionReject, InspectionRelease
 from app.services import purchase_order_service as orders
 from app.services.transfer_service import _lock_materials
 
@@ -125,6 +128,29 @@ def open_hold(db: Session, material: Material, receipt_line: GoodsReceiptLine, r
     return hold
 
 
+def create_hold(db: Session, data: InspectionCreate) -> int:
+    """Holds part of a batch's available stock for inspection. Returns the new hold's id."""
+    material = _lock_materials(db, data.material_id).get(data.material_id)
+    if material is None:
+        raise ItemNotFoundError("Material", data.material_id)
+    if data.quantity > material.available:
+        raise InvalidInputError(
+            f"Only {material.available} {material.unit} of {material.id} are available; {data.quantity} cannot be "
+            f"held for inspection (reserved and already-held stock cannot be held again)")
+    material.available -= data.quantity
+    material.status = MaterialStatusEnum.INSPECTION
+    material.version += 1
+    hold = InspectionHold(material_id=material.id, goods_receipt_line_id=None, quantity=data.quantity,
+                          status=S.OPEN, created_by=data.actor, version=1)
+    db.add(hold)
+    db.flush()
+    _ledger(db, TransactionType.INSPECTION, hold, material, data.quantity, data.actor,
+            f"Held for inspection: {data.reason}")
+    _event(db, hold, "held", None, data.actor, data.quantity, data.reason)
+    db.commit()
+    return hold.id
+
+
 def _lock_hold(db: Session, hold_id: int, expected_version: int, verb: str) -> InspectionHold:
     hold = db.scalar(select(InspectionHold).where(InspectionHold.id == hold_id)
                      .with_for_update().execution_options(populate_existing=True))
@@ -188,7 +214,29 @@ def _lock_order_for(db: Session, hold_id: int) -> tuple[PurchaseOrder, dict]:
     return order, {line.id: line for line in orders._lock_lines(db, order)}
 
 
+def _reject_manual(db: Session, hold_id: int, data: InspectionReject) -> None:
+    """Rejects stock from a hold opened by hand: it is scrapped; no purchase order is involved."""
+    hold = _lock_hold(db, hold_id, data.expected_version, "rejected")
+    if data.disposition != RejectionDisposition.SCRAP:
+        raise InvalidInputError(
+            f"{_label(hold.id)} was not opened by a goods receipt, so its stock cannot be returned to a supplier; "
+            f"choose Scrap")
+    material = _decide(db, hold, data.quantity, "rejected")
+    previous = hold.status
+    hold.rejected_quantity += data.quantity
+    material.quantity -= data.quantity  # held stock is blocked, so available + reserved still fit
+    _ledger(db, TransactionType.SCRAP, hold, material, data.quantity, data.actor, f"{data.disposition.value}: {data.reason}")
+    _close_if_done(db, hold, material)
+    _event(db, hold, "rejected", previous, data.actor, data.quantity, data.reason, data.disposition)
+    db.commit()
+
+
 def reject(db: Session, hold_id: int, data: InspectionReject) -> None:
+    receipt_line_id = db.scalar(select(InspectionHold.goods_receipt_line_id).where(InspectionHold.id == hold_id))
+    if receipt_line_id is None:
+        if db.scalar(select(InspectionHold.id).where(InspectionHold.id == hold_id)) is None:
+            raise ItemNotFoundError("Inspection", _label(hold_id))
+        return _reject_manual(db, hold_id, data)
     order, order_lines = _lock_order_for(db, hold_id)
     hold = _lock_hold(db, hold_id, data.expected_version, "rejected")
     material = _decide(db, hold, data.quantity, "rejected")

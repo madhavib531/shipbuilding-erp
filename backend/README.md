@@ -25,15 +25,19 @@ local SQLite file. Use `postgresql+psycopg://USER:PASSWORD@localhost:5432/dockya
 Optional development data (categories, yards, locations, ships and four suppliers; never materials):
 `python -m scripts.seed_reference_data`. It only inserts missing rows.
 
-Frontend: `cd ..\frontend; npm install; npm run dev` → http://localhost:5173 (expects the API at
-http://localhost:8000; override with `VITE_API_BASE_URL`).
+Frontend: `cd ..\frontend; npm install; npm run dev` → open **http://localhost:8443** (expects the API
+at http://localhost:8000; override with `VITE_API_BASE_URL`). The API only accepts browser requests
+from the origins in `CORS_ORIGINS` (default: `localhost`/`127.0.0.1` on ports 8443 and 5173). Opening the
+app from another address — such as Vite's "Network" URL or a different port — makes every request fail
+with `400 Disallowed CORS origin`; add that address to `CORS_ORIGINS` in `.env` if you need it.
 
 Interactive API docs: http://localhost:8000/api/docs · health check: http://localhost:8000/health
 
 ## Schema migrations
 
 Alembic, one linear history: `45e53a0f1df0` initial → `cab3875a1603` transfers → `8b06997ed8a5`
-purchase orders → `6e07101bb214` goods receipts → `f3263eb479ec` inspection holds (head).
+purchase orders → `6e07101bb214` goods receipts → `f3263eb479ec` inspection holds → `9d4c2a7e1b30`
+manual inspection holds (head; makes `inspection_holds.goods_receipt_line_id` nullable).
 `alembic current` shows the applied revision. After changing a model:
 `alembic revision --autogenerate -m "..."`, review the file, then `alembic upgrade head`. Back up the
 database before applying migrations to it.
@@ -57,6 +61,11 @@ never prints the password, and confirms the development database's row counts ar
 * Every change to stock writes a row to the stock ledger (`material_transactions`) in the same
   transaction: RECEIPT (goods receipts), TRANSFER_OUT / TRANSFER_IN (transfers), INSPECTION / RELEASE /
   RETURN / SCRAP (inspection holds), and ADJUSTMENT for manual inventory changes.
+* An inspection hold is opened by a goods receipt ("Hold for inspection") or by hand on existing stock
+  (`POST /inspections`): that moves the quantity from available to held (on hand is unchanged) with an
+  INSPECTION ledger row. Release returns it to available; rejection removes it from on hand. Only receipt
+  holds can be returned to the supplier (the quantity stays owed on the order); stock held by hand can
+  only be scrapped. A batch with an open hold has status Inspection and cannot receive more goods.
 * Ledger quantities are positive, with direction given by the type — except manual ADJUSTMENT rows
   (no reference document), which are **signed**: `+n` added, `-n` removed, `0` when only available or
   reserved moved. Creating a batch with stock writes an opening-balance `+n`. Transit-shortage
@@ -77,7 +86,7 @@ never prints the password, and confirms the development database's row counts ar
 | Transfers | `GET/POST /transfers`, `GET /transfers/summary`, `GET /transfers/{id}`, `POST /transfers/{id}/approve · reject · cancel · dispatch · receive` |
 | Suppliers | `GET/POST /suppliers`, `GET/PATCH /suppliers/{id}` |
 | Purchase orders | `GET/POST /purchase-orders`, `GET /purchase-orders/summary`, `GET/PATCH /purchase-orders/{id}`, `POST /purchase-orders/{id}/approve · reopen · cancel · close`, `GET/POST /purchase-orders/{id}/receipts` |
-| Inspections | `GET /inspections`, `GET /inspections/summary`, `GET /inspections/{id}`, `POST /inspections/{id}/release · reject` |
+| Inspections | `GET /inspections`, `GET /inspections/summary`, `GET /inspections/{id}`, `POST /inspections` (hold available stock: `material_id`, `quantity`, `reason`, `actor`), `POST /inspections/{id}/release · reject` |
 | Audit feed | `GET /audit-events` — stock ledger, transfer, purchase-order and inspection events; filters `source` (repeatable), `search`, `actor`, `date_from`, `date_to`, `skip`, `limit` ≤ 200 |
 | Dashboard | `GET /dashboard/movements?months=1..24`, `GET /dashboard/ships`, `GET /dashboard/yards` |
 | Analytics | `GET /analytics/overview` — categories, batch age, supplier, transfer and inspection figures and rule-based attention flags, computed from stored records (no AI model) |
@@ -108,6 +117,8 @@ tests/               pytest suite (*_pg.py files need PostgreSQL)
 * Supplier changes, edits to non-stock fields, and inventory edits made before stock adjustments were
   recorded do not appear in the audit feed. The application only appends to its history tables, but
   the database does not enforce immutability.
-* No stock valuation (costs), offline mode, notifications, export, or QR label printing / camera
-  scanning. The Assistant and Analytics pages are rule-based; no AI model is connected.
+* No stock valuation (costs), offline mode or stored notifications (the frontend's bell reads live alerts
+  from the summary endpoints). Inventory and the audit log export CSV; the
+  dashboard report is printed or saved as PDF from the browser. QR labels are printed from the
+  browser (no label-printer integration); camera scanning needs http://localhost or HTTPS. The Assistant and Analytics pages are rule-based; no AI model is connected.
 * Timestamps are stored without a time zone in the database server's local time.

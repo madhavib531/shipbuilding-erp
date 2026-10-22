@@ -3,10 +3,21 @@
 ## [Unreleased] — Project completion: live pages, rule-based analytics, hardening
 
 ### Added
+- `POST /api/v1/inspections`: holds part of a batch's available stock for inspection (New inspection on
+  the Quality page). Migration `9d4c2a7e1b30` makes `inspection_holds.goods_receipt_line_id` nullable;
+  stock held this way can be released or scrapped, not returned to a supplier.
+- Frontend: Inventory status and ship filters; dashboard report printing (print or save as PDF); a
+  top-bar yard selector for Inventory and Movements (`yard` on `GET /api/v1/transfers`); a live alerts
+  panel on the bell, built from the existing summary endpoints; page numbers on every list.
 - `GET /api/v1/dashboard/yards` and a `ship` filter on `GET /api/v1/materials` (Ships & Yards page).
 - `GET /api/v1/analytics/overview`: stock by category, batch record age, supplier delivery performance,
   transfer lead times and shortages, inspection outcomes and rule-based attention flags, all computed
   from stored records (no AI model; ratios are null when there is nothing to divide by).
+- Frontend: printable QR batch labels (Inventory and QR Tracking) and camera scanning on QR Tracking,
+  using `qrcode-generator` (MIT) and `jsqr` (Apache-2.0); no backend change.
+- Frontend: CSV export on Inventory and the audit log of every row matching the current search and
+  filters (built from `GET /api/v1/materials` and `GET /api/v1/audit-events`; formula-like text is
+  prefixed with `'`); no backend change.
 - `scripts/run_pg_tests.py`: runs every PostgreSQL-only test against a separate test database.
 
 ### Changed
